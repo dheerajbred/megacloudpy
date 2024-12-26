@@ -84,8 +84,6 @@ class Canvas:
 
 
 # fake window
-
-
 class LocalStorage:
     def setItem(self, item, value):
         setattr(self, item, value)
@@ -133,8 +131,6 @@ class FakeWindow:
 
 
 # node list
-
-
 class Image:
     src = ""
     height = 50
@@ -1033,7 +1029,7 @@ class WasmLoader:
         return bytearray(instance.bytes)
 
     def groot(self) -> None:
-        wasm.exports(store)["groot"](store)  # type: ignore
+        wasm.exports(store)["groot"](store)
 
 
 async def V(a: Literal["url", "file"]) -> None:
