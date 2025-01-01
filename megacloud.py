@@ -62,7 +62,7 @@ class Style:
 
 
 class Canvas:
-    baseUrl = ""
+    baseUrl: str
     width = 0
     height = 0
     style = Style()
@@ -88,8 +88,8 @@ class Document:
 
 
 class Location:
-    href = ""
-    origin = ""
+    href: str
+    origin: str
 
 
 class Performance:
