@@ -171,18 +171,13 @@ def set_int32(offset: int, value: int) -> None:
     write_to_memory(value.to_bytes(4, "little"), offset)
 
 
-async def make_request(
-    url: str,
-    headers: dict,
-    params: dict,
-    func,
-):
+async def make_request(url: str, headers: dict, params: dict, func):
     async with aiohttp.ClientSession() as client:
         async with client.get(url, headers=headers, params=params) as resp:
             return await func(resp)
 
 
-async def get_pixel_arr(url: str) -> list[int]:
+async def get_pixel_array(url: str) -> list[int]:
     async with aiohttp.ClientSession() as client:
         async with client.get(url) as resp:
             data = await resp.read()
@@ -904,7 +899,7 @@ class WasmLoader:
         self.path = path
         self.imports = load_wasm_imports()
 
-    async def load_from_url(self) -> bytearray:
+    async def load(self) -> bytearray:
         if not self.url:
             raise ValueError("no url for wasm module provided")
 
@@ -919,28 +914,13 @@ class WasmLoader:
 
         return bytearray(instance.bytes)  # type: ignore
 
-    async def load_from_file(self) -> bytearray:
-        if not self.path:
-            raise ValueError("no path for wasm module provided")
-
-        instance = create_wasm_instance(self.path, self.imports)
-        assign_wasm(instance)
-
-        return bytearray(instance.bytes)  # type: ignore
-
     def groot(self) -> None:
         wasm.exports(store)["groot"](store)  # type: ignore
 
 
-async def run_wasm(a: Literal["url", "file"]) -> bytes:
-    if a == "url":
-        wl = WasmLoader("https://megacloud.tv/images/loading.png")
-        wasm_bytes = await wl.load_from_url()
-
-    else:
-        wl = WasmLoader(path=f"{os.getenv('HOME')}/wabt/bin/loading_nolog.wat")
-        wasm_bytes = await wl.load_from_file()
-
+async def run_wasm() -> bytes:
+    wl = WasmLoader("https://megacloud.tv/images/loading.png")
+    wasm_bytes = await wl.load()
     setattr(fake_window, "bytes", wasm_bytes)
 
     wl.groot()
@@ -1028,10 +1008,10 @@ async def extract(embed_url: str) -> dict:
     fake_window.G = xrax
 
     node_list.image.src = f"{base_url}/images/image.png?v=0.1.0"
-    image_data.data = await get_pixel_arr(node_list.image.src)
+    image_data.data = await get_pixel_array(node_list.image.src)
 
     await get_meta(embed_url)
-    q5 = await run_wasm("url")
+    q5 = await run_wasm()
 
     params = {
         "id": fake_window.pid,
