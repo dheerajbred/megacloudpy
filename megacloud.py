@@ -26,6 +26,8 @@ from wasmtime import (
     Store,
     ValType,
 )
+import wasmtime
+import tracemalloc
 
 
 user_agent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -960,6 +962,7 @@ def decrypt_sources(password: bytes, value: str) -> str:
 
 
 async def extract(embed_url: str) -> dict:
+    global wasmtime
     src_url = f"{base_url}/embed-2/ajax/e-1/getSources"
 
     wasm = WASMProcessor(embed_url)
@@ -1004,17 +1007,3 @@ async def extract(embed_url: str) -> dict:
 
     resp["sources"] = sources
     return resp
-
-
-async def main():
-    for i in range(15):
-        print(len(gc.get_objects()))
-        await extract("https://megacloud.club/embed-2/e-1/I5EzJQNtAWT7?k=1")
-
-    # with open("asdf", "w") as f:
-    #     for i in range(0, len(objs), 10):
-    #         for obj in objs[i : i + 10]:
-    #             f.write(str(obj) + "\n")
-
-
-asyncio.run(main())
