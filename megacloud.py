@@ -1,4 +1,3 @@
-import asyncio
 import base64
 import hashlib
 from io import BytesIO
@@ -26,9 +25,6 @@ from wasmtime import (
     Store,
     ValType,
 )
-import wasmtime
-import tracemalloc
-
 
 user_agent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 base_url = "https://megacloud.club"
@@ -145,18 +141,15 @@ class WASMProcessor:
         self.engine.close()
         self.engine = None
 
-        self.store.gc()
         self.store.close()
         self.store = None
 
         self.wasm = None
         self.wasm_memory = None
+
         self.arr = []
-        self.pointer = 0
 
         self.image_data.data = []
-
-        gc.collect()
 
     def get_wasm_memory(self) -> Memory:
         return self.wasm.exports(self.store)["memory"]
@@ -962,7 +955,6 @@ def decrypt_sources(password: bytes, value: str) -> str:
 
 
 async def extract(embed_url: str) -> dict:
-    global wasmtime
     src_url = f"{base_url}/embed-2/ajax/e-1/getSources"
 
     wasm = WASMProcessor(embed_url)
@@ -991,9 +983,6 @@ async def extract(embed_url: str) -> dict:
     q5 = bytearray(q5)
     q8: bytearray
 
-    wasm = None
-    gc.collect()
-
     if resp["t"] != 0:
         apply_xor(q5, q1)
         q8 = q5
@@ -1006,4 +995,8 @@ async def extract(embed_url: str) -> dict:
     sources = json.loads(decrypt_sources(password, resp["sources"]))
 
     resp["sources"] = sources
+
+    wasm = None
+    gc.collect()
+
     return resp
