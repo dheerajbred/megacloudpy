@@ -1,25 +1,25 @@
 import base64
 import hashlib
-from io import BytesIO
+import asyncio
 import json
 import re
 import struct
-from typing import Any
+import aiohttp
+import PIL.Image
 
+from io import BytesIO
+from typing import Any
+from numpy import array
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
-import PIL.Image
-import aiohttp
-from numpy import array
 from wasmtime import Engine, Func, FuncType, Instance, Linker, Memory, Module, Store, ValType
 
-# wasm
+
 engine = Engine()
 store = Store(engine)
-wasm: Instance | None = None
-wasm_memory: Memory | None = None
+wasminstance: Instance | None = None
+wasmmemory: Memory | None = None
 
-# other
 arr: list[Any] = [None] * 128
 pointer = len(arr)
 size: int
@@ -40,12 +40,10 @@ class ImageData:
     data: list[int]
 
 
-# canvas
 class Canvas:
     baseUrl: str
 
 
-# fake window
 class LocalStorage:
     kversion: str
     kid: str
@@ -68,7 +66,7 @@ class Performance:
     timeOrigin = 0
 
 
-class FakeWindow:
+class Window:
     localStorage = LocalStorage()
     navigator = Navigator()
     location = Location()
@@ -85,7 +83,6 @@ class FakeWindow:
     def jwt_plugin(self, wasm: bytearray) -> None: ...
 
 
-# node list
 class Image:
     src: str
     height = 50
@@ -101,24 +98,20 @@ class NodeList:
 meta = Meta()
 image_data = ImageData()
 canvas = Canvas()
-fake_window = FakeWindow()
+window = Window()
 node_list = NodeList()
 
 
-def get_wasm_memory() -> Memory:
-    return wasm.exports(store)["memory"]  # type: ignore
+def get_memory_buffer() -> bytearray:
+    return wasminstance.exports(store)["memory"].read(store)
 
 
 def write_to_memory(data, offset: int) -> None:
-    buffer = get_memory_buffer()
-
-    if isinstance(data, bytes) or isinstance(data, bytearray):
-        buffer[offset : offset + len(data)] = data
+    if isinstance(data, bytes | bytearray):
+        wasmmemory.write(store, data, offset)
 
     else:
         raise ValueError(f"can't write '{type(data).__name__}' type")
-
-    wasm_memory.write(store, buffer)
 
 
 def set_float64(offset: int, value: int) -> None:
@@ -173,10 +166,6 @@ def parse(text: str) -> int:
     return offset
 
 
-def get_memory_buffer() -> bytearray:
-    return wasm_memory.read(store)
-
-
 def shift(index: int) -> None:
     global pointer
 
@@ -218,7 +207,7 @@ def args(QP, Qn, QT, func):
         "cnt": 1,
         "dtor": QT,
     }
-    __wbindgen_export_2 = wasm.exports(store)["__wbindgen_export_2"]
+    __wbindgen_export_2 = wasminstance.exports(store)["__wbindgen_export_2"]
 
     def wrapped(*Qw):
         Qx["cnt"] += 1
@@ -227,7 +216,7 @@ def args(QP, Qn, QT, func):
         finally:
             Qx["cnt"] -= 1
             if Qx["cnt"] == 0:
-                __wbindgen_export_2.get(store, Qx["dtor"])(Qx["a"], Qx["b"])  # type: ignore
+                __wbindgen_export_2.get(store, Qx["dtor"])(Qx["a"], Qx["b"])
 
                 Qx["a"] = 0
 
@@ -237,23 +226,23 @@ def args(QP, Qn, QT, func):
 
 
 def export0(Qp, Qn) -> int:
-    __wbindgen_export_0 = wasm.exports(store)["__wbindgen_export_0"]
-    return __wbindgen_export_0(store, Qp, Qn) & 0xFFFFFFFF  # type: ignore
+    __wbindgen_export_0 = wasminstance.exports(store)["__wbindgen_export_0"]
+    return __wbindgen_export_0(store, Qp, Qn) & 0xFFFFFFFF
 
 
 def export3(Qp, Qn) -> int:
-    __wbindgen_export_3 = wasm.exports(store)["__wbindgen_export_3"]
-    return shift_get(__wbindgen_export_3(store, Qp, Qn))  # type: ignore
+    __wbindgen_export_3 = wasminstance.exports(store)["__wbindgen_export_3"]
+    return shift_get(__wbindgen_export_3(store, Qp, Qn))
 
 
 def export4(Qy, QO, Qx):
-    __wbindgen_export_4 = wasm.exports(store)["__wbindgen_export_4"]
-    __wbindgen_export_4(store, Qy, QO, add_to_stack(Qx))  # type: ignore
+    __wbindgen_export_4 = wasminstance.exports(store)["__wbindgen_export_4"]
+    __wbindgen_export_4(store, Qy, QO, add_to_stack(Qx))
 
 
 def export5(Qp, Qn):
-    __wbindgen_export_4 = wasm.exports(store)["__wbindgen_export_5"]
-    __wbindgen_export_4(store, Qp, Qn)  # type: ignore
+    __wbindgen_export_4 = wasminstance.exports(store)["__wbindgen_export_5"]
+    __wbindgen_export_4(store, Qp, Qn)
 
 
 def write_png(decoded_png):
@@ -551,31 +540,31 @@ def load_wasm_imports() -> Linker:
     add_import_func(TYPE3, __wbg_instanceof_Window_cee7a886d55e7df5)
 
     def __wbg_document_eb7fd66bde3ee213(index):
-        fakewindow = get(index)
-        return add_to_stack(fakewindow.document)
+        window = get(index)
+        return add_to_stack(window.document)
 
     add_import_func(TYPE3, __wbg_document_eb7fd66bde3ee213)
 
     def __wbg_location_b17760ac7977a47a(index):
-        fakewindow = get(index)
-        return add_to_stack(fakewindow.location)
+        window = get(index)
+        return add_to_stack(window.location)
 
     add_import_func(TYPE3, __wbg_location_b17760ac7977a47a)
 
     def __wbg_localStorage_3d538af21ea07fcc(*_):
-        return add_to_stack(fake_window.localStorage)
+        return add_to_stack(window.localStorage)
 
     add_import_func(TYPE3, __wbg_localStorage_3d538af21ea07fcc)
 
     def __wbg_performance_4ca1873776fdb3d2(index):
-        fakewindow = get(index)
-        return add_to_stack(fakewindow.performance)
+        window = get(index)
+        return add_to_stack(window.performance)
 
     add_import_func(TYPE3, __wbg_performance_4ca1873776fdb3d2)
 
     def __wbg_origin_e1f8acdeb3a39a2b(offset, index):
-        fakewindow = get(index)
-        origin = parse(fakewindow.origin)
+        window = get(index)
+        origin = parse(window.origin)
 
         set_int32(offset + 4, size)
         set_int32(offset, origin)
@@ -583,10 +572,10 @@ def load_wasm_imports() -> Linker:
     add_import_func(TYPE2, __wbg_origin_e1f8acdeb3a39a2b)
 
     def __wbg_get_8986951b1ee310e0(index, decode_index, decode_offset):
-        fakewindow = get(index)
+        window = get(index)
         attr = decode_sub(decode_index, decode_offset)
 
-        data = getattr(fakewindow, attr)
+        data = getattr(window, attr)
         res = 0 if is_null(data) else add_to_stack(data)
 
         return res
@@ -605,8 +594,8 @@ def load_wasm_imports() -> Linker:
     add_import_func(TYPE3, __wbindgen_is_object)
 
     def __wbg_crypto_1d1f22824a6a080c(index):
-        fakewindow = get(index)
-        return add_to_stack(fakewindow.crypto)
+        window = get(index)
+        return add_to_stack(window.crypto)
 
     add_import_func(TYPE3, __wbg_crypto_1d1f22824a6a080c)
 
@@ -637,8 +626,8 @@ def load_wasm_imports() -> Linker:
     add_import_func(TYPE8, __wbg_require_cca90b1a94a0255b)
 
     def __wbg_msCrypto_eb05e62b530a1508(index):
-        fakewindow = get(index)
-        return add_to_stack(fakewindow.msCrypto)
+        window = get(index)
+        return add_to_stack(window.msCrypto)
 
     add_import_func(TYPE3, __wbg_msCrypto_eb05e62b530a1508)
 
@@ -659,22 +648,22 @@ def load_wasm_imports() -> Linker:
     add_import_func(TYPE3, __wbindgen_is_function)
 
     def __wbg_self_05040bd9523805b9():
-        return add_to_stack(fake_window)
+        return add_to_stack(window)
 
     add_import_func(TYPE8, __wbg_self_05040bd9523805b9)
 
     def __wbg_window_adc720039f2cb14f():
-        return add_to_stack(fake_window)
+        return add_to_stack(window)
 
     add_import_func(TYPE8, __wbg_window_adc720039f2cb14f)
 
     def __wbg_globalThis_622105db80c1457d():
-        return add_to_stack(fake_window)
+        return add_to_stack(window)
 
     add_import_func(TYPE8, __wbg_globalThis_622105db80c1457d)
 
     def __wbg_global_f56b013ed9bcf359():
-        return add_to_stack(fake_window)
+        return add_to_stack(window)
 
     add_import_func(TYPE8, __wbg_global_f56b013ed9bcf359)
 
@@ -690,17 +679,17 @@ def load_wasm_imports() -> Linker:
     add_import_func(TYPE3, __wbindgen_object_clone_ref)
 
     def __wbg_eval_c824e170787ad184(index, offset):
-        fake_str = f"fake_{decode_sub(index, offset)}"
+        string = decode_sub(index, offset)
 
         try:
-            if "fake_window.pid" in fake_str:
-                pid = fake_str.split("=")[1].replace("'", "").strip()
-                fake_window.pid = pid
+            if "window.pid" in string:
+                pid = string.split("=")[1].replace("'", "").strip()
+                window.pid = pid
 
                 eval_result = pid
 
             else:
-                eval_result = eval(fake_str)
+                eval_result = eval(string)
 
         except AttributeError:
             eval_result = None
@@ -805,7 +794,7 @@ def load_wasm_imports() -> Linker:
     add_import_func(TYPE2, __wbindgen_throw)
 
     def __wbindgen_memory():
-        return add_to_stack(wasm.exports(store)["memory"])
+        return add_to_stack(wasminstance.exports(store)["memory"])
 
     add_import_func(TYPE8, __wbindgen_memory)
 
@@ -832,46 +821,37 @@ def load_wasm_imports() -> Linker:
     return linker
 
 
-def assign_wasm(wasm_instance: Instance) -> None:
-    global wasm, wasm_memory
-
-    wasm = wasm_instance
-    wasm_memory = wasm.exports(store)["memory"]  # type: ignore
-
-
-def create_wasm_instance(wasm: str | bytes, imports: Linker) -> Instance:
-    module = Module(engine, wasm)
+def create_wasm_instance(wasmcontent: bytes, imports: Linker) -> Instance:
+    module = Module(engine, wasmcontent)
     instance = imports.instantiate(store, module)
-    setattr(instance, "bytes", wasm)
-
     return instance
 
 
-async def load_wasm(url: str) -> bytearray:
+async def load_wasm() -> bytearray:
+    global wasminstance, wasmmemory
+
+    url = "https://megacloud.tv/images/loading.png"
+    headers = {"Host": "megacloud.tv"}
+    params = {"v": "0.0.9"}
+
+    b_resp = await make_request(url, headers, params, lambda i: i.read())
     imports = load_wasm_imports()
-    headers = {
-        "Referer": fake_window.location.href,
-        "Host": "megacloud.tv",
-    }
-    b_resp = await make_request(url, headers, {"v": "0.0.9"}, lambda i: i.read())
     instance = create_wasm_instance(b_resp, imports)
 
-    assign_wasm(instance)
+    wasminstance = instance
+    wasmmemory = instance.exports(store)["memory"]
 
-    return bytearray(instance.bytes)  # type: ignore
+    return bytearray(b_resp)
 
 
 async def run_wasm() -> bytes:
-    if wasm is None and wasm_memory is None:
-        wasm_bytes = await load_wasm("https://megacloud.tv/images/loading.png")
-    else:
-        wasm_bytes = wasm.bytes
+    wasm_bytes = await load_wasm()
 
-    setattr(fake_window, "bytes", wasm_bytes)
+    setattr(window, "bytes", wasm_bytes)
 
-    wasm.exports(store)["groot"](store)  # type: ignore
-    fake_window.jwt_plugin(wasm_bytes)
-    return fake_window.navigate()
+    wasminstance.exports(store)["groot"](store)
+    window.jwt_plugin(wasm_bytes)
+    return window.navigate()
 
 
 async def get_meta(url) -> None:
@@ -941,13 +921,13 @@ async def extract(embed_url: str) -> dict:
     xrax = match.group(1)
     src_url = f"{base_url}/embed-2/ajax/e-1/getSources"
 
-    # get necessary values
     canvas.baseUrl = embed_url
     node_list.image.src = f"{base_url}/images/image.png?v=0.1.0"
-    image_data.data = await get_pixel_arr(node_list.image.src)
+    if not getattr(image_data, "data", None):
+        image_data.data = await get_pixel_arr(node_list.image.src)
 
-    fake_window.location.href = embed_url
-    fake_window.xrax = xrax
+    window.location.href = embed_url
+    window.xrax = xrax
 
     await get_meta(embed_url)
     q5 = await run_wasm()
@@ -957,10 +937,10 @@ async def extract(embed_url: str) -> dict:
     }
 
     params = {
-        "id": fake_window.pid,
-        "v": fake_window.localStorage.kversion,
-        "h": fake_window.localStorage.kid,
-        "b": fake_window.browser_version,
+        "id": window.pid,
+        "v": window.localStorage.kversion,
+        "h": window.localStorage.kid,
+        "b": window.browser_version,
     }
 
     resp = await make_request(src_url, headers, params, lambda i: i.json())
@@ -968,8 +948,7 @@ async def extract(embed_url: str) -> dict:
     if not resp["sources"]:
         raise ValueError("no sources found")
 
-    # decrypt
-    q3 = int(fake_window.localStorage.kversion)
+    q3 = int(window.localStorage.kversion)
     q1 = split_int32(q3)
     q5 = bytearray(q5)
     q8: bytearray
@@ -986,4 +965,18 @@ async def extract(embed_url: str) -> dict:
     sources = json.loads(decrypt_sources(password, resp["sources"]))
 
     resp["sources"] = sources
+
+    resp["intro"] = resp["intro"]["start"], resp["intro"]["end"]
+    resp["outro"] = resp["outro"]["start"], resp["outro"]["end"]
+
     return resp
+
+
+async def main():
+    urls = ["https://megacloud.club/embed-2/e-1/TkS1MVYFcCB7?k=1", "https://megacloud.club/embed-2/e-1/QGFGjNDrSObS?k=1"]
+    for u in urls:
+        print(u)
+        print((await extract(u))["sources"])
+
+
+asyncio.run(main())
