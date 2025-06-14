@@ -164,8 +164,6 @@ async def get_secret_key() -> bytes:
     script = await make_request(script_url, {}, {"v": int(time.time())}, lambda i: i.text())
     strings = ""
 
-    with open("js.js", "w") as f:
-        f.write(script)
     xor_key_pattern = r"\)\('([\[\]\w%*!()#.:?,~\-$\'&;@=+\^/]+)'\)};"
     string_pattern = r'function\s*\w{2}\(\)\s*{\s*return\s*"([\w%*^!()#.:?,~\-$\'&;@=+\/]+)";}'
     delim_pattern = r"\w{3}\s*=\s*\w.\w{2}\(\w{3},'(.)'\);"
