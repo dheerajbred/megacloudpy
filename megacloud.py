@@ -41,13 +41,13 @@ def _re(pattern: str, string: str, name: str, *, l: bool) -> re.Match | list[str
     return v
 
 
-def ishex(v: str) -> str | None:
+def ishex(v: str) -> bool:
     try:
         int(v, 16)
-        return v
+        return True
 
     except ValueError:
-        return None
+        return False
 
 
 def generate_sequence(n: int) -> list[int]:
@@ -122,7 +122,10 @@ def get_key_parts(script: str, string_array: list[str]) -> list[str]:
         elif m := re.match(call2_pattern, fcall) or re.match(call3_pattern, fcall):
             i1 = int(m.group(1))
             i2 = int(m.group(2))
-            v = ishex(string_array[i1]) or string_array[i2]
+            v = string_array[i1]
+
+            if not ishex(v) or v in parts:
+                v = string_array[i2]
 
             parts.append(v)
 
@@ -161,7 +164,9 @@ async def get_secret_key() -> bytes:
     script = await make_request(script_url, {}, {"v": int(time.time())}, lambda i: i.text())
     strings = ""
 
-    xor_key_pattern = r"\)\('([\w%*!()#.:?,~\-$\'&;@=+\^/]+)'\)};"
+    with open("js.js", "w") as f:
+        f.write(script)
+    xor_key_pattern = r"\)\('([\[\]\w%*!()#.:?,~\-$\'&;@=+\^/]+)'\)};"
     string_pattern = r'function\s*\w{2}\(\)\s*{\s*return\s*"([\w%*^!()#.:?,~\-$\'&;@=+\/]+)";}'
     delim_pattern = r"\w{3}\s*=\s*\w.\w{2}\(\w{3},'(.)'\);"
 
@@ -213,7 +218,7 @@ async def extract(embed_url: str) -> dict:
 
 
 async def main():
-    url = "https://megacloud.blog/embed-2/v2/e-1/HaOIV0L7HHfa?k=1&autoPlay=1&oa=0&asi=1"
+    url = "https://megacloud.blog/embed-2/v2/e-1/BfnkwT8H9IHg?k=1"
     print(json.dumps(await extract(url), indent=4))
 
 
