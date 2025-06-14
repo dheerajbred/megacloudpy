@@ -157,7 +157,7 @@ def decrypt_sources(key: bytes, value: str) -> str:
 
 
 async def get_secret_key() -> bytes:
-    script_url = f"{base_url}/js/player/a/v2/pro/embed-1.min.js?v={int(time.time())}"
+    script_url = f"{base_url}/js/player/a/v2/pro/embed-1.min.js"
     script = await make_request(script_url, {}, {"v": int(time.time())}, lambda i: i.text())
     strings = ""
 
