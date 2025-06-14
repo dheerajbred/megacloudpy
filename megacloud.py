@@ -83,8 +83,9 @@ def shuffle_array(script: str, array: list[str]) -> list[str]:
 
 
 def get_key_indexes(script: str) -> list[int]:
-    array_content_pattern = r'\w\s*=\s*\[\s*((?!arguments)[\d\w.",\s+\(\)]+)];'
-    array_item_pattern = r'(\w{3}.\w{2}\([\w",\(\)]+\))|(\w{3}\.\w{2}\("?\d+"?,"?\d+"?,\w{3}\.\w{2}\(\d+\)\))|(\d+)'
+    func_pattern = r"\w{3}\.[\w$_]{2}"
+    array_content_pattern = r'\w=\[((?!arguments)[\d\w.",\s+\(\)]+)];'
+    array_item_pattern = rf'({func_pattern}\([\w",\(\)]+\))|({func_pattern}\("?\d+"?,"?\d+"?,{func_pattern}\(\d+\)\))|(\d+)'
     indexes = []
 
     index_array_content = _re(array_content_pattern, script, "index array", l=True)[-1]
@@ -109,7 +110,7 @@ def get_key_parts(script: str, string_array: list[str]) -> list[str]:
     call3_pattern = rf'{func_pattern}\({func_pattern}\("?(\d+)"?,"?(\d+)"?,{func_pattern}\((\d)\){{3}}'
 
     array_items = _re(array_content_pattern, script, "key parts array items", l=True)[-1]
-    func_calls = re.split(r"(?<=\))\s*,\s*(?=\w)", array_items)
+    func_calls = re.split(r"(?<=\)),(?=\w)", array_items)
 
     parts = []
 
@@ -165,12 +166,13 @@ def decrypt_sources(key: bytes, value: str) -> str:
 
 async def get_secret_key() -> bytes:
     script_url = f"{base_url}/js/player/a/v2/pro/embed-1.min.js"
+    print(f"{script_url}?v={int(time.time())}")
     script = await make_request(script_url, {}, {"v": int(time.time())}, lambda i: i.text())
     strings = ""
 
     xor_key_pattern = r"\)\('([\[\]\w%*!()#.:?,~\-$\'&;@=+\^/]+)'\)};"
-    string_pattern = r'function\s*\w{2}\(\)\s*{\s*return\s*"([\w%*^!()#.:?,~\-$\'&;@=+\/]+)";}'
-    delim_pattern = r"\w{3}\s*=\s*\w.\w{2}\(\w{3},'(.)'\);"
+    string_pattern = r"function \w{2}\(\){return \"([\w%*^!()#.:?,~\-$\'&;@=+\/]+)\";}"
+    delim_pattern = r"\w{3}=\w\.[\w$_]{2}\(\w{3},'(.)'\);"
 
     xor_key = _re(xor_key_pattern, script, "xor key", l=False).group(1)
     char_sequence = parse.unquote(_re(string_pattern, script, "char sequence", l=False).group(1))
