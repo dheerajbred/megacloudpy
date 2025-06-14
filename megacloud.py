@@ -84,13 +84,13 @@ def shuffle_array(script: str, array: list[str]) -> list[str]:
 
 def get_key_indexes(script: str) -> list[int]:
     func_pattern = r"\w{3}\.[\w$_]{2}"
-    array_content_pattern = r'\w=\[((?!arguments)[\d\w.",\s+\(\)]+)];'
+    array_content_pattern = rf'\w=\[((?!arguments)[\w\d.$\(\)",+]+)\];'
     array_item_pattern = rf'({func_pattern}\([\w",\(\)]+\))|({func_pattern}\("?\d+"?,"?\d+"?,{func_pattern}\(\d+\)\))|(\d+)'
     indexes = []
 
-    index_array_content = _re(array_content_pattern, script, "index array", l=True)[-1]
+    array_items = _re(array_content_pattern, script, "index array", l=True)[-1]
 
-    for m in _re(array_item_pattern, index_array_content, "index array items", l=True):
+    for m in _re(array_item_pattern, array_items, "index array items", l=True):
         idx = m[0] or m[1] or m[2]
 
         if not idx.isdigit():
@@ -102,14 +102,14 @@ def get_key_indexes(script: str) -> list[int]:
 
 
 def get_key_parts(script: str, string_array: list[str]) -> list[str]:
-    func_pattern = r"\w{3}\.[\w$_]{2}"
-    array_content_pattern = rf'\w\=\[({func_pattern}\([ \w\(\)"+,$.]+\),?)\]'
+    func_pattern = r"[\w$]{3}\.[\w$]{2}"
+    array_content_pattern = rf'\w=\[((?!arguments)[\w\d.$\(\)",+]+)\];'
 
     call1_pattern = rf'{func_pattern}\(\+?"?(\d+)"?\)'
     call2_pattern = rf'{func_pattern}\({func_pattern}\("?(\d+)"?,"?(\d+)"?\)\)'
     call3_pattern = rf'{func_pattern}\({func_pattern}\("?(\d+)"?,"?(\d+)"?,{func_pattern}\((\d)\){{3}}'
 
-    array_items = _re(array_content_pattern, script, "key parts array items", l=True)[-1]
+    array_items = _re(array_content_pattern, script, "key parts array items", l=True)[0]
     func_calls = re.split(r"(?<=\)),(?=\w)", array_items)
 
     parts = []
@@ -124,10 +124,10 @@ def get_key_parts(script: str, string_array: list[str]) -> list[str]:
         elif m := re.match(call2_pattern, fcall) or re.match(call3_pattern, fcall):
             i1 = int(m.group(1))
             i2 = int(m.group(2))
-            v = string_array[i1]
+            v = string_array[i2]
 
             if not ishex(v) or v in parts:
-                v = string_array[i2]
+                v = string_array[i1]
 
             parts.append(v)
 
@@ -166,8 +166,9 @@ def decrypt_sources(key: bytes, value: str) -> str:
 
 async def get_secret_key() -> bytes:
     script_url = f"{base_url}/js/player/a/v2/pro/embed-1.min.js"
-    print(f"{script_url}?v={int(time.time())}")
-    script = await make_request(script_url, {}, {"v": int(time.time())}, lambda i: i.text())
+    script_version = int(time.time())
+
+    script = await make_request(script_url, {}, {"v": script_version}, lambda i: i.text())
     strings = ""
 
     xor_key_pattern = r"\)\('([\[\]\w%*!()#.:?,~\-$\'&;@=+\^/]+)'\)};"
@@ -202,6 +203,7 @@ async def extract(embed_url: str) -> dict:
         "Referer": "https://megacloud.club/",
         "Origin": "https://megacloud.club",
     }
+
     id = _re(r"embed-2/v2/e-1/([A-z0-9]+)\?", embed_url, "source id", l=False).group(1)
     get_src_url = f"{base_url}/embed-2/v2/e-1/getSources"
 
