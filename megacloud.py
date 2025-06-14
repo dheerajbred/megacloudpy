@@ -128,7 +128,7 @@ def get_key_parts(script: str, string_array: list[str]) -> list[str]:
             i2 = int(m.group(2))
             v = string_array[i1]
 
-            if not ishex(v) or v in parts:
+            if not ishex(v):
                 v = string_array[i2]
 
             parts.append(v)
