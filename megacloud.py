@@ -84,7 +84,7 @@ def shuffle_array(script: str, array: list[str]) -> list[str]:
 
 def get_key_indexes(script: str) -> list[int]:
     func_pattern = r"\w{3}\.[\w$_]{2}"
-    array_content_pattern = rf'\w=\[((?!arguments)[\w\d.$\(\)",+]+)\];'
+    array_content_pattern = r'\w=\[((?!arguments)[\w\d.$\(\)",+]+)\];'
     array_item_pattern = rf'({func_pattern}\([\w",\(\)]+\))|({func_pattern}\("?\d+"?,"?\d+"?,{func_pattern}\(\d+\)\))|(\d+)'
     indexes = []
 
@@ -103,7 +103,7 @@ def get_key_indexes(script: str) -> list[int]:
 
 def get_key_parts(script: str, string_array: list[str]) -> list[str]:
     func_pattern = r"[\w$]{3}\.[\w$]{2}"
-    array_content_pattern = rf'\w=\[((?!arguments)[\w\d.$\(\)",+]+)\];'
+    array_content_pattern = r'\w=\[((?!arguments)[\w\d.$\(\)",+]+)\];'
 
     call1_pattern = rf'{func_pattern}\(\+?"?(\d+)"?\)'
     call2_pattern = rf'{func_pattern}\({func_pattern}\("?(\d+)"?,"?(\d+)"?\)\)'
@@ -200,8 +200,8 @@ async def get_secret_key() -> bytes:
 async def extract(embed_url: str) -> dict:
     headers = {
         "User-Agent": user_agent,
-        "Referer": "https://megacloud.club/",
-        "Origin": "https://megacloud.club",
+        "Referer": base_url,
+        "Origin": base_url,
     }
 
     id = _re(r"embed-2/v2/e-1/([A-z0-9]+)\?", embed_url, "source id", l=False).group(1)
