@@ -101,11 +101,12 @@ def get_key_indexes(script: str) -> list[int]:
 
 
 def get_key_parts(script: str, string_array: list[str]) -> list[str]:
-    array_content_pattern = r'\w\s*=\s*\[(\s*\w{3}\.\w{2}\([ \w\(\)"+,.]+\),?)\]'
+    func_pattern = r"\w{3}\.[\w$_]{2}"
+    array_content_pattern = rf'\w\=\[({func_pattern}\([ \w\(\)"+,$.]+\),?)\]'
 
-    call1_pattern = r'\w{3}.\w{2}\(\+?"?(\d+)"?\)'
-    call2_pattern = r'\w{3}.\w{2}\(\w{3}.\w{2}\("?(\d+)"?,"?(\d+)"?\)\)'
-    call3_pattern = r'\w{3}.\w{2}\(\w{3}.\w{2}\("?(\d+)"?,"?(\d+)"?,\w{3}.\w{2}\((\d)\){3}'
+    call1_pattern = rf'{func_pattern}\(\+?"?(\d+)"?\)'
+    call2_pattern = rf'{func_pattern}\({func_pattern}\("?(\d+)"?,"?(\d+)"?\)\)'
+    call3_pattern = rf'{func_pattern}\({func_pattern}\("?(\d+)"?,"?(\d+)"?,{func_pattern}\((\d)\){{3}}'
 
     array_items = _re(array_content_pattern, script, "key parts array items", l=True)[-1]
     func_calls = re.split(r"(?<=\))\s*,\s*(?=\w)", array_items)
@@ -128,6 +129,9 @@ def get_key_parts(script: str, string_array: list[str]) -> list[str]:
                 v = string_array[i2]
 
             parts.append(v)
+
+        else:
+            raise ValueError(f"unmatched {fcall}")
 
     return parts
 
