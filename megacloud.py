@@ -41,13 +41,28 @@ def _re(pattern: str, string: str, name: str, *, l: bool) -> re.Match | list[str
     return v
 
 
-def ishex(v: str) -> bool:
-    try:
-        int(v, 16)
-        return True
+def generate_bitwise_func(operation: str) -> Callable:
+    operation = re.sub(r"[\w$]{2}", "args", operation)
+    if any(i in operation for i in (">", "<")):
+        v = operation.split()
+        v[-1] = f"({v[-1]} & 31)"
+        operation = " ".join(v)
 
-    except ValueError:
-        return False
+    return lambda *args: eval(operation)
+
+
+def get_bitwise_operations(script: str) -> dict[int, Callable]:
+    bitwise_switchcase_pattern = r"\w\[\d+\]=\(function\([\w$]+\)[{\d\w$:\(\),= ]+;switch\([\w$]+\){([^}]+)}"
+    bitwise_operation_pattern = r"case (\d+):([^;]+);break;"
+
+    switchcase_section = _re(bitwise_switchcase_pattern, script, "bitwise switchcase section", l=False).group(1)
+
+    funcs = {}
+
+    for num, operation in _re(bitwise_operation_pattern, switchcase_section, "bitwise operation", l=True):
+        funcs[int(num)] = generate_bitwise_func(operation.split("=")[1])
+
+    return funcs
 
 
 def generate_sequence(n: int) -> list[int]:
@@ -112,22 +127,23 @@ def get_key_parts(script: str, string_array: list[str]) -> list[str]:
     array_items = _re(array_content_pattern, script, "key parts array items", l=True)[0]
     func_calls = re.split(r"(?<=\)),(?=\w)", array_items)
 
+    bitwise = get_bitwise_operations(script)
     parts = []
 
     for fcall in func_calls:
         if m := re.match(call1_pattern, fcall):
-            i1 = int(m.group(1))
-            v = string_array[i1]
+            i = int(m.group(1))
+            v = string_array[i]
 
             parts.append(v)
 
         elif m := re.match(call2_pattern, fcall) or re.match(call3_pattern, fcall):
             i1 = int(m.group(1))
             i2 = int(m.group(2))
-            v = string_array[i2]
+            flag = int(m.group(3)) if len(m.groups()) == 3 else 0
 
-            if not ishex(v) or v in parts:
-                v = string_array[i1]
+            i = bitwise[flag](i1, i2)
+            v = string_array[i]
 
             parts.append(v)
 
