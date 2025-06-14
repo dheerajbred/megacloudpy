@@ -1,8 +1,8 @@
 import base64
 import hashlib
+import json
 import time
 import asyncio
-import json
 from urllib import parse
 import re
 import aiohttp
@@ -41,26 +41,22 @@ def _re(pattern: str, string: str, name: str, *, l: bool) -> re.Match | list[str
     return v
 
 
-def ishex(v: str) -> bool:
+def ishex(v: str) -> str | None:
     try:
         int(v, 16)
-        return True
+        return v
 
     except ValueError:
-        return False
+        return None
 
 
 def generate_sequence(n: int) -> list[int]:
     res = [5, 8, 14, 11]
+    if n <= 4:
+        return res
 
     for i in range(2, n - 2):
-        if i % 2 == 0:
-            inc = i + 3
-
-        else:
-            inc = i + 2
-
-        res.append(res[i] + inc)
+        res.append(res[i] + i + 3 - (i % 2))
 
     return res
 
@@ -126,10 +122,7 @@ def get_key_parts(script: str, string_array: list[str]) -> list[str]:
         elif m := re.match(call2_pattern, fcall) or re.match(call3_pattern, fcall):
             i1 = int(m.group(1))
             i2 = int(m.group(2))
-            v = string_array[i1]
-
-            if not ishex(v):
-                v = string_array[i2]
+            v = ishex(string_array[i1]) or string_array[i2]
 
             parts.append(v)
 
@@ -220,8 +213,8 @@ async def extract(embed_url: str) -> dict:
 
 
 async def main():
-    url = "https://megacloud.blog/embed-2/v2/e-1/eQoLG92C2Xia?k=1&autoPlay=1&oa=0&asi=1"
-    print((await extract(url))["sources"])
+    url = "https://megacloud.blog/embed-2/v2/e-1/HaOIV0L7HHfa?k=1&autoPlay=1&oa=0&asi=1"
+    print(json.dumps(await extract(url), indent=4))
 
 
 asyncio.run(main())
