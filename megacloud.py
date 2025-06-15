@@ -116,26 +116,26 @@ def get_key_indexes(script: str) -> list[int]:
     return indexes
 
 
-def get_key_parts(script: str, string_array: list[str]) -> list[str]:
-    func_pattern = r"[\w$]{3}\.[\w$]{2}"
-    array_content_pattern = r'\w=\[((?!arguments)[\w\d.$\(\)",+]+)\];'
+@overload
+def get_key(script: str, string_array: list[str], *, return_parts: Literal[True]) -> str: ...
 
+
+@overload
+def get_key(script: str, string_array: list[str], *, return_parts: Literal[False]) -> list[str]: ...
+
+
+def get_key(script: str, string_array: list[str], *, return_parts: bool) -> list[str] | str:
+    func_pattern = r"[\w$]{3}\.[\w$]{2}"
     call1_pattern = rf'{func_pattern}\(\+?"?(\d+)"?\)'
     call2_pattern = rf'{func_pattern}\({func_pattern}\("?(\d+)"?,"?(\d+)"?\)\)'
     call3_pattern = rf'{func_pattern}\({func_pattern}\("?(\d+)"?,"?(\d+)"?,{func_pattern}\((\d)\){{3}}'
 
-    array_items = _re(array_content_pattern, script, "key parts array items", l=True)[0]
-    func_calls = re.split(r"(?<=\)),(?=\w)", array_items)
-
     bitwise = get_bitwise_operations(script)
-    parts = []
 
-    for fcall in func_calls:
+    def _eval_fcall(fcall: str) -> str:
         if m := re.match(call1_pattern, fcall):
             i = int(m.group(1))
             v = string_array[i]
-
-            parts.append(v)
 
         elif m := re.match(call2_pattern, fcall) or re.match(call3_pattern, fcall):
             i1 = int(m.group(1))
@@ -145,12 +145,25 @@ def get_key_parts(script: str, string_array: list[str]) -> list[str]:
             i = bitwise[flag](i1, i2)
             v = string_array[i]
 
-            parts.append(v)
-
         else:
             raise ValueError(f"unmatched {fcall}")
 
-    return parts
+        return v
+
+    if return_parts:
+        key_func_pattern = r'var [\w$,]{28,};[\w$]+=([\w.\(\)\+"]+);'
+        fcall = _re(key_func_pattern, script, "key function call", l=False).group(1)
+
+        return _eval_fcall(fcall).replace("-", "")
+
+    else:
+        array_content_pattern = rf'\w=\[((?!arguments)[\w\d.$\(\)",+]+)\];'
+
+        array_items = _re(array_content_pattern, script, "key parts array items", l=True)[0]
+        func_calls = re.split(r"(?<=\)),(?=\w)", array_items)
+
+        parts = [_eval_fcall(fcall) for fcall in func_calls]
+        return parts
 
 
 def derive_key_and_iv(password: bytes) -> tuple[bytes, bytes]:
@@ -205,10 +218,13 @@ async def get_secret_key() -> bytes:
     string_array = strings.split(delim)
     string_array = shuffle_array(script, string_array)
 
-    keys = get_key_parts(script, string_array)
-    indexes = get_key_indexes(script)
+    try:
+        keys = get_key(script, string_array, return_parts=False)
+        indexes = get_key_indexes(script)
+        key = "".join(keys[i] for i in indexes)
 
-    key = "".join(keys[i] for i in indexes)
+    except ValueError:
+        key = get_key(script, string_array, return_parts=True)
 
     return key.encode()
 
@@ -240,7 +256,7 @@ async def extract(embed_url: str) -> dict:
 
 
 async def main():
-    url = "https://megacloud.blog/embed-2/v2/e-1/GN9tXMMaVGn3?k=1&autoPlay=1&oa=0&asi=1"
+    url = "https://megacloud.blog/embed-2/v2/e-1/X7tWp9Oy80gm?k=1&autoPlay=1&oa=0&asi=1"
     print(json.dumps(await extract(url), indent=4))
 
 
