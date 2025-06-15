@@ -117,11 +117,11 @@ def get_key_indexes(script: str) -> list[int]:
 
 
 @overload
-def get_key(script: str, string_array: list[str], *, return_parts: Literal[True]) -> str: ...
+def get_key(script: str, string_array: list[str], *, return_parts: Literal[True]) -> list[str]: ...
 
 
 @overload
-def get_key(script: str, string_array: list[str], *, return_parts: Literal[False]) -> list[str]: ...
+def get_key(script: str, string_array: list[str], *, return_parts: Literal[False]) -> str: ...
 
 
 def get_key(script: str, string_array: list[str], *, return_parts: bool) -> list[str] | str:
@@ -151,12 +151,6 @@ def get_key(script: str, string_array: list[str], *, return_parts: bool) -> list
         return v
 
     if return_parts:
-        key_func_pattern = r'var [\w$,]{28,};[\w$]+=([\w.\(\)\+"]+);'
-        fcall = _re(key_func_pattern, script, "key function call", l=False).group(1)
-
-        return _eval_fcall(fcall).replace("-", "")
-
-    else:
         array_content_pattern = rf'\w=\[((?!arguments)[\w\d.$\(\)",+]+)\];'
 
         array_items = _re(array_content_pattern, script, "key parts array items", l=True)[0]
@@ -164,6 +158,12 @@ def get_key(script: str, string_array: list[str], *, return_parts: bool) -> list
 
         parts = [_eval_fcall(fcall) for fcall in func_calls]
         return parts
+
+    else:
+        key_func_pattern = r'var [\w$,]{28,};[\w$]+=([\w.\(\)\+"]+);'
+        fcall = _re(key_func_pattern, script, "key function call", l=False).group(1)
+
+        return _eval_fcall(fcall).replace("-", "")
 
 
 def derive_key_and_iv(password: bytes) -> tuple[bytes, bytes]:
@@ -193,6 +193,90 @@ def decrypt_sources(key: bytes, value: str) -> str:
     return unpad(result, AES.block_size).decode()
 
 
+def _resolve_karr_iarr(script: str, string_array: list[str]) -> bytes:
+    keys = get_key(script, string_array, return_parts=True)
+    indexes = get_key_indexes(script)
+
+    key = "".join(keys[i] for i in indexes)
+    return key.encode()
+
+
+def _resolve_key_in_iarr(script: str) -> bytes:
+    indexes = get_key_indexes(script)
+    key = "".join(chr(i) for i in indexes)
+
+    return key.encode()
+
+
+def _resolve_key_in_var(script: str, string_array: list[str]) -> bytes:
+    key = get_key(script, string_array, return_parts=False)
+    return key.encode()
+
+
+def _resolve_64arr(script: str, string_array: list[str], map_arg: str, map_body: str) -> bytes:
+    keys = get_key(script, string_array, return_parts=True)
+    bitwise = get_bitwise_operations(script)
+
+    func_pattern = r"\w{3}\.[\w$_]{2}"
+
+    parse_int_pattern = rf'\w+\({map_arg},\+?"16"?\)'
+    bitwise2_pattern = rf"{func_pattern}\((\w),(\w\))"
+    bitwise3_pattern = rf'{func_pattern}\("?(\d+)"?,"?(\d+)"?,{func_pattern}\((\d)\){{2}}'
+
+    set_def_flag_pattern = rf'{func_pattern}\(\+?"?(\d+)"?\)'
+
+    raw_values = []
+    if re.search(parse_int_pattern, map_body):
+        raw_values = [int(k, 16) for k in keys]
+
+    elif m := re.search(bitwise2_pattern, map_body):
+        flag = _re(set_def_flag_pattern, map_body, "set flag func call", l=False).group(1)
+        func = bitwise[flag]
+
+        var_name = m.group(1) if m.group(1) != map_arg else m.group(2)
+        var_value = _re(rf"\s+{var_name}=(\d+);", script, "bitwise static value", l=False).group(1)
+
+        raw_values = [func(var_value, int(i)) for i in keys]
+
+    # elif m := re.search(bitwise3_pattern, map_body):
+    #     ...
+
+    return "".join([chr(v) for v in raw_values]).encode()
+
+
+def _resolve_key(script: str, string_array: list[str]) -> bytes:
+    keygen_func_pattern = r"var [\w$,]{28,};.+?\w=\(\)=>{(.+?)};"
+    map_pattern = r"\((\w)=>{(.+?return.+?;)"
+
+    keygen_func = _re(keygen_func_pattern, script, "map function", l=False)
+    keygen_body = keygen_func.group(1)
+
+    try:
+        map_func = _re(map_pattern, keygen_body, "map body", l=False)
+        map_arg = map_func.group(1)
+        map_body = map_func.group(2)
+
+        string = map_body
+        versions = {
+            r"return \w\[\w\];": (_resolve_karr_iarr, script, string_array),
+            r"return .+": (_resolve_64arr, script, string_array, map_arg, map_body),
+        }
+
+    except ValueError:
+        string = keygen_body
+        versions = {
+            r"return \w\[": (_resolve_key_in_var, script, string_array),
+            r"return \w+\[": (_resolve_key_in_iarr, script),
+        }
+
+    for p, t in versions.items():
+        if re.search(p, string):
+            func = t[0]
+            args = t[1:]
+
+            return func(*args)
+
+
 async def get_secret_key() -> bytes:
     script_url = f"{base_url}/js/player/a/v2/pro/embed-1.min.js"
     script_version = int(time.time())
@@ -200,8 +284,8 @@ async def get_secret_key() -> bytes:
     script = await make_request(script_url, {}, {"v": script_version}, lambda i: i.text())
     strings = ""
 
-    xor_key_pattern = r"\)\('([\[\]\w%*!()#.:?,~\-$\'&;@=+\^/]+)'\)};"
-    string_pattern = r"function \w{2}\(\){return \"([\w%*^!()#.:?,~\-$\'&;@=+\/]+)\";}"
+    xor_key_pattern = r"\)\('(.+)'\)};"
+    string_pattern = r"function [\w$]{2}\(\){return \"(.+?)\";}"
     delim_pattern = r"\w{3}=\w\.[\w$]{2}\(\w{3},'(.)'\);"
 
     xor_key = _re(xor_key_pattern, script, "xor key", l=False).group(1)
@@ -218,15 +302,8 @@ async def get_secret_key() -> bytes:
     string_array = strings.split(delim)
     string_array = shuffle_array(script, string_array)
 
-    try:
-        keys = get_key(script, string_array, return_parts=False)
-        indexes = get_key_indexes(script)
-        key = "".join(keys[i] for i in indexes)
-
-    except ValueError:
-        key = get_key(script, string_array, return_parts=True)
-
-    return key.encode()
+    key = _resolve_key(script, string_array)
+    return key
 
 
 async def extract(embed_url: str) -> dict:
@@ -256,7 +333,7 @@ async def extract(embed_url: str) -> dict:
 
 
 async def main():
-    url = "https://megacloud.blog/embed-2/v2/e-1/X7tWp9Oy80gm?k=1&autoPlay=1&oa=0&asi=1"
+    url = "https://megacloud.blog/embed-2/v2/e-1/qQQjOItwUeym?k=1&autoPlay=1&oa=0&asi=1"
     print(json.dumps(await extract(url), indent=4))
 
 
