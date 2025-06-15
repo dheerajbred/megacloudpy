@@ -53,7 +53,7 @@ def generate_bitwise_func(operation: str) -> Callable:
 
 def get_bitwise_operations(script: str) -> dict[int, Callable]:
     bitwise_switchcase_pattern = r"\w\[\d+\]=\(function\([\w$]+\)[{\d\w$:\(\),= ]+;switch\([\w$]+\){([^}]+)}"
-    bitwise_operation_pattern = r"case (\d+):([^;]+);break;"
+    bitwise_operation_pattern = r"case (\d+):([\w\[\]\-+|><^* =$]+);break;"
 
     switchcase_section = _re(bitwise_switchcase_pattern, script, "bitwise switchcase section", l=False).group(1)
 
@@ -77,7 +77,7 @@ def generate_sequence(n: int) -> list[int]:
 
 
 def get_array_slices(script: str) -> list[tuple[int, ...]]:
-    func_pattern = r"\w\.[\w$_]{2}"
+    func_pattern = r"\w\.[\w$]{2}"
     pattern = rf"case\s(\d{{1,2}}):{func_pattern}\({func_pattern}\(\),\w{{3}},{func_pattern}\({func_pattern}\(\w{{3}},([\d\-]+),[\d\-]+\),[\d\-]+,([\d\-]+)\)\)"
 
     pairs = tuple(map(lambda t: tuple(map(int, t)), _re(pattern, script, "pairs", l=True)))
@@ -189,7 +189,7 @@ async def get_secret_key() -> bytes:
 
     xor_key_pattern = r"\)\('([\[\]\w%*!()#.:?,~\-$\'&;@=+\^/]+)'\)};"
     string_pattern = r"function \w{2}\(\){return \"([\w%*^!()#.:?,~\-$\'&;@=+\/]+)\";}"
-    delim_pattern = r"\w{3}=\w\.[\w$_]{2}\(\w{3},'(.)'\);"
+    delim_pattern = r"\w{3}=\w\.[\w$]{2}\(\w{3},'(.)'\);"
 
     xor_key = _re(xor_key_pattern, script, "xor key", l=False).group(1)
     char_sequence = parse.unquote(_re(string_pattern, script, "char sequence", l=False).group(1))
@@ -240,7 +240,7 @@ async def extract(embed_url: str) -> dict:
 
 
 async def main():
-    url = "https://megacloud.blog/embed-2/v2/e-1/BfnkwT8H9IHg?k=1"
+    url = "https://megacloud.blog/embed-2/v2/e-1/GN9tXMMaVGn3?k=1&autoPlay=1&oa=0&asi=1"
     print(json.dumps(await extract(url), indent=4))
 
 
