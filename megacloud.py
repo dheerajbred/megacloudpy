@@ -158,7 +158,7 @@ def get_key(script: str, string_array: list[str], *, return_parts: bool) -> list
         return parts
 
     else:
-        key_func_pattern = r'var [\w$,]{28,};[\w$]+=([\w.\(\)\+"]+);'
+        key_func_pattern = r'var [\w$,]{28,};.+?[\w$]+=([\w.\(\)\+,"]+);'
         fcall = _re(key_func_pattern, script, "key function call", l=False).group(1)
 
         return _eval_fcall(fcall).replace("-", "")
@@ -331,7 +331,7 @@ async def extract(embed_url: str) -> dict:
 
 
 async def main():
-    url = "https://megacloud.blog/embed-2/v2/e-1/qQQjOItwUeym?k=1&autoPlay=1&oa=0&asi=1"
+    url = "https://megacloud.blog/embed-2/v2/e-1/n0SVutpGWsDC?k=1&autoPlay=1&oa=0&asi=1"
     print(json.dumps(await extract(url), indent=4))
 
 
