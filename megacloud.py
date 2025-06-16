@@ -151,17 +151,25 @@ def get_key(script: str, string_array: list[str], *, return_parts: bool) -> list
     if return_parts:
         array_content_pattern = rf'\w=\[((?!arguments)[\w\d.$\(\)",+]+)\];'
 
-        array_items = _re(array_content_pattern, script, "key parts array items", l=True)[0]
-        func_calls = re.split(r"(?<=\)),(?=\w)", array_items)
+        try:
+            array_items = _re(array_content_pattern, script, "", l=True)[0]
+        except ValueError:
+            return []
 
+        func_calls = re.split(r"(?<=\)),(?=\w)", array_items)
         parts = [_eval_fcall(fcall) for fcall in func_calls]
+
         return parts
 
     else:
-        key_func_pattern = r'var [\w$,]{28,};.+?[\w$]+=([\w.\(\)\+,"]+);'
+        key_func_pattern = rf'var [\w$,]{{28,}};(?:{func_pattern}\(\+?"?\d+"?\);)?[\w$]+=([\w$.\(\)\+,"]+);'
         fcall = _re(key_func_pattern, script, "key function call", l=False).group(1)
+        key = _eval_fcall(fcall).replace("-", "")
 
-        return _eval_fcall(fcall).replace("-", "")
+        if key.endswith("="):
+            key = base64.b64decode(key).decode()
+
+        return key
 
 
 def derive_key_and_iv(password: bytes) -> tuple[bytes, bytes]:
@@ -263,7 +271,7 @@ def _resolve_key(script: str, string_array: list[str]) -> bytes:
     except ValueError:
         string = keygen_body
         versions = {
-            r"return \w\[": (_resolve_key_in_var, script, string_array),
+            r"return \w\[|[\w$]+\(": (_resolve_key_in_var, script, string_array),
             r"return \w+\[": (_resolve_key_in_iarr, script),
         }
 
