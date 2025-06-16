@@ -78,7 +78,7 @@ def generate_sequence(n: int) -> list[int]:
 
 def get_array_slices(script: str) -> list[tuple[int, ...]]:
     func_pattern = r"\w\.[\w$]{2}"
-    pattern = rf"case\s(\d{{1,2}}):{func_pattern}\({func_pattern}\(\),\w{{3}},{func_pattern}\({func_pattern}\(\w{{3}},([\d\-]+),[\d\-]+\),[\d\-]+,([\d\-]+)\)\)"
+    pattern = rf"case\s(\d{{1,2}}):{func_pattern}\({func_pattern}\(\),[\w$]{{3}},{func_pattern}\({func_pattern}\([\w$]{{3}},([\d\-]+),[\d\-]+\),[\d\-]+,([\d\-]+)\)\)"
 
     pairs = tuple(map(lambda t: tuple(map(int, t)), _re(pattern, script, "pairs", l=True)))
     order_map = {v: i for i, v in enumerate(generate_sequence(len(pairs)))}
@@ -118,8 +118,6 @@ def get_key_indexes(script: str) -> list[int]:
 
 @overload
 def get_key(script: str, string_array: list[str], *, return_parts: Literal[True]) -> list[str]: ...
-
-
 @overload
 def get_key(script: str, string_array: list[str], *, return_parts: Literal[False]) -> str: ...
 
@@ -286,7 +284,7 @@ async def get_secret_key() -> bytes:
 
     xor_key_pattern = r"\)\('(.+)'\)};"
     string_pattern = r"function [\w$]{2}\(\){return \"(.+?)\";}"
-    delim_pattern = r"\w{3}=\w\.[\w$]{2}\(\w{3},'(.)'\);"
+    delim_pattern = r"[\w$]{3}=\w\.[\w$]{2}\([\w$]{3},'(.)'\);"
 
     xor_key = _re(xor_key_pattern, script, "xor key", l=False).group(1)
     char_sequence = parse.unquote(_re(string_pattern, script, "char sequence", l=False).group(1))
