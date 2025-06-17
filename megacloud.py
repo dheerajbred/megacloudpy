@@ -23,7 +23,8 @@ class ResolverFlags(IntEnum):
     REVERSE = 1 << 1
     FROMCHARCODE = 1 << 2
     SLICE = 1 << 3
-    FALLBACK = 1 << 4
+    SPLIT = 1 << 4
+    FALLBACK = 1 << 5
 
 
 class Patterns(StrEnum):
@@ -86,54 +87,60 @@ class Resolvers:
         return keys
 
     @classmethod
-    def slice(cls, s: "Extractor") -> str:
+    def slice(cls, s: "Extractor") -> tuple[list, list]:
         key = cls._get_key(s)
         if key.endswith("="):
             key = base64.b64decode(key).decode()
 
-        return key
+        return list(key), list(range(0, len(key)))
 
     @classmethod
-    def map(cls, s: "Extractor") -> str:
+    def map(cls, s: "Extractor") -> tuple[list, list]:
         keys = cls._get_keys(s)
-        indexes = s._get_indexes()
+        try:
+            indexes = s._get_indexes()
+        except ValueError:
+            indexes = []
 
-        key = "".join(keys[i] for i in indexes)
-        return key
+        return keys, indexes
 
     @classmethod
-    def from_charcode(cls, s: "Extractor") -> str:
-        keys = cls._get_keys(s)
-        bitwise = s.bitwise
+    def from_charcode(cls, s: "Extractor", keys: list = []) -> tuple[list, list]:
         raw_values = []
 
-        map_ = _re(Patterns.MAP, s.script, l=False)
-        map_arg = map_.group(1)
-        map_body = map_.group(2)
+        if keys:
+            map_ = _re(Patterns.MAP, s.script, l=False)
+            map_arg = map_.group(1)
+            map_body = map_.group(2)
 
-        if re.search(Patterns.PARSE_INT.format(map_arg), map_body):
-            raw_values = [int(k, 16) for k in keys]
+            if re.search(Patterns.PARSE_INT.format(map_arg), map_body):
+                raw_values = [int(k, 16) for k in keys]
 
-        elif m := re.search(Patterns.BITWISE2, map_body):
-            flag = _re(Patterns.SET_DEF_FLAG, map_body, l=False).group(1)
-            func = bitwise[flag]
+            elif m := re.search(Patterns.BITWISE2, map_body):
+                flag = _re(Patterns.SET_DEF_FLAG, map_body, l=False).group(1)
+                func = s.bitwise[flag]
 
-            var_name = m.group(1) if m.group(1) != map_arg else m.group(2)
-            var_value = _re(Patterns.VAR.format(var_name), s.script, l=False).group(1)
+                var_name = m.group(1) if m.group(1) != map_arg else m.group(2)
+                var_value = _re(Patterns.VAR.format(var_name), s.script, l=False).group(1)
 
-            raw_values = [func(var_value, int(i)) for i in keys]
+                raw_values = [func(var_value, int(i)) for i in keys]
 
-        # elif m := re.search(bitwise3_pattern, map_body):
-        #     ...
+            # elif m := re.search(bitwise3_pattern, map_body):
+            #     ...
 
-        return "".join([chr(v) for v in raw_values])
+        else:
+            indexes = s._get_indexes()
+            raw_values = [int(i) for i in indexes]
+
+        return [chr(v) for v in raw_values], list(range(0, len(raw_values)))
 
     @classmethod
-    def fallback(cls, s: "Extractor") -> str:
+    def fallback(cls, s: "Extractor") -> tuple[list, list]:
         to_try = [cls.slice, cls.map, cls.from_charcode]
+
         for t in to_try:
             try:
-                key = t(s)
+                r = t(s)
                 break
             except ValueError:
                 continue
@@ -141,26 +148,30 @@ class Resolvers:
         else:
             raise ValueError("key not found =(")
 
-        return key
+        return r
 
     @classmethod
     def resolve(cls, flags: int, s: "Extractor") -> bytes:
         key = ""
+        keys = []
+        indexes = []
 
         if flags & ResolverFlags.MAP:
-            key = cls.map(s)
+            keys, indexes = cls.map(s)
 
-        if flags & ResolverFlags.SLICE:
-            key = cls.slice(s)
+        if flags & (ResolverFlags.SLICE | ResolverFlags.SPLIT):
+            keys, indexes = cls.slice(s)
+
+        if flags & ResolverFlags.FROMCHARCODE:
+            keys, indexes = cls.from_charcode(s, keys)
+
+        if flags & ResolverFlags.FALLBACK:
+            keys, indexes = cls.fallback(s)
+
+        key = "".join(keys[i] for i in indexes)
 
         if flags & ResolverFlags.REVERSE:
             key = "".join(reversed(key))
-
-        if flags & ResolverFlags.FROMCHARCODE:
-            key = cls.from_charcode(s)
-
-        if flags & ResolverFlags.FALLBACK:
-            key = cls.fallback(s)
 
         return key.encode()
 
@@ -319,7 +330,7 @@ class Extractor:
         keygen_func = _re(Patterns.KEYGEN, self.script, l=False)
         keygen_body = keygen_func.group(1)
 
-        functions = []
+        functions: list[str] = []
         print(keygen_body)
 
         for i in re.findall(Patterns.GET, keygen_body):
@@ -328,21 +339,11 @@ class Extractor:
         print(functions)
         flags = 0
 
-        if "slice" in functions:
-            flags |= ResolverFlags.SLICE
+        for f in functions:
+            if f.upper() in ResolverFlags._member_names_:
+                flags |= ResolverFlags[f.upper()]
 
-        elif "reverse" in functions:
-            flags |= ResolverFlags.SLICE
-            flags |= ResolverFlags.REVERSE
-
-        elif "map" in functions:
-            if "fromCharCode" in functions:
-                flags |= ResolverFlags.FROMCHARCODE
-
-            else:
-                flags |= ResolverFlags.MAP
-
-        else:
+        if not flags:
             flags |= ResolverFlags.FALLBACK
 
         key = Resolvers.resolve(flags, self) or b":P"
