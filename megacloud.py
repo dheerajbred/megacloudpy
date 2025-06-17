@@ -2,6 +2,9 @@ import base64
 import hashlib
 import json
 import time
+import subprocess
+import os
+import tempfile
 import asyncio
 from urllib import parse
 import re
@@ -30,11 +33,12 @@ class ResolverFlags(IntEnum):
 class Patterns(StrEnum):
     _FUNC = r"[\w$]{3}\.[\w$]{2}"
     _FUNC2 = r"[\w$]\.[\w$]{2}"
+    _FUNC3 = r"[\w$]{3}\.[\w$]{3}"
 
     SOURCE_ID = r"embed-2/v2/e-1/([A-z0-9]+)\?"
 
     IDX = r'"(\d+)"'
-    VAR = r"\s+{}=(\d+);"
+    VAR = r';{}=\+?"?(\d+)"?;'
 
     XOR_KEY = r"\)\('(.+)'\)};"
     STRING = r"function [\w$]{2}\(\){return \"(.+?)\";}"
@@ -45,7 +49,12 @@ class Patterns(StrEnum):
 
     SLICES = rf"case\s(\d{{1,2}}):{_FUNC2}\({_FUNC2}\(\),[\w$]{{3}},{_FUNC2}\({_FUNC2}\([\w$]{{3}},([\d\-]+),[\d\-]+\),[\d\-]+,([\d\-]+)\)\)"
 
-    _GET1_INDEX = r'+?"?(\d+)"?(?:( [|\-\+*><]+ "?\d+"?))?'
+    GET1_FUNC = rf'({_FUNC}\(\+?"?\d+"?(?: [|\-\+*><^]+ "?\d+"?)?\))'
+    GET2_FUNC = rf'({_FUNC}\({_FUNC}\("?\d+"?,"?\d+"?\)\))'
+    GET3_FUNC = rf'({_FUNC}\({_FUNC}\("?\d+"?,"?\d+"?,{_FUNC}\(\d\)\)\))'
+    GET_FUNC = f"{GET1_FUNC}|{GET2_FUNC}|{GET3_FUNC}"
+
+    _GET1_INDEX = r'+?"?(\d+)"?(?:( [|\-\+*><^]+ "?\d+"?))?'
     GET1 = rf"{_FUNC}\(\{_GET1_INDEX}\)"
     GET2 = rf'{_FUNC}\({_FUNC}\("?(\d+)"?,"?(\d+)"?\)\)'
     GET3 = rf'{_FUNC}\({_FUNC}\("?(\d+)"?,"?(\d+)"?,{_FUNC}\((\d)\)\)\)'
@@ -55,7 +64,7 @@ class Patterns(StrEnum):
     INDEX_ARRAY_ITEM = rf'({_FUNC}\([\w",\(\)]+\))|({_FUNC}\("?\d+"?,"?\d+"?,{_FUNC}\(\d+\)\))|(\d+)'
 
     KEY_ARRAY_CONTENT = rf'\w=\[((?!arguments)[\w\d.$\(\)",+]+)\];'
-    GET_KEY = rf'var [\w$,]{{28,}};(?:{_FUNC}\(\+?"?\d+"?\);)?[\w$]+=([\w$.\(\)\+,"]+);'
+    KEY_VAR = rf'var [\w$,]{{28,}};(?:{_FUNC}\(\+?"?\d+"?\);)?[\w$]+=([\w$.\(\)\+,"]+);'
 
     KEYGEN = r"var [\w$,]{28,};.+?\w=\(\)=>{(.+?)};"
     MAP = r"\((\w)=>{(.+?return.+?;)"
@@ -64,6 +73,9 @@ class Patterns(StrEnum):
     BITWISE2 = rf"{_FUNC}\((\w),(\w\))"
     BITWISE3 = rf'{_FUNC}\("?(\d+)"?,"?(\d+)"?,{_FUNC}\((\d)\)\)'
     SET_DEF_FLAG = rf'{_FUNC}\(\+?"?(\d+)"?\)'
+
+    GET_KEY = r"var [\w$,]{28,};(.+?)try"
+    GET_KEY_FUNC = r"(\w)=\(\)=>{(.+?)};"
 
 
 class Resolvers:
@@ -86,6 +98,22 @@ class Resolvers:
 
         return keys
 
+    @staticmethod
+    def _prepare(to_execute: str, s: "Extractor") -> str:
+        for f in _re(Patterns.GET_FUNC, to_execute, l=True):
+            call = f[0]
+            string = s._get(_re(Patterns.GET, call, l=False).groups())
+
+            to_execute = to_execute.replace(call, f'"{string}"')
+
+        to_execute = re.sub(rf"if\({Patterns._FUNC}\(\)\)|if\({Patterns._FUNC3}\(\)\)", "if(1)", to_execute)
+        to_execute = re.sub(rf"{Patterns._FUNC}\(\);|{Patterns._FUNC3}\(\);", "", to_execute)
+
+        get_key_func_name = _re(Patterns.GET_KEY_FUNC, to_execute, l=False).group(1)
+        to_execute += f"console.log({get_key_func_name}());"
+
+        return to_execute
+
     @classmethod
     def slice(cls, s: "Extractor") -> tuple[list, list]:
         key = cls._get_key(s)
@@ -105,10 +133,30 @@ class Resolvers:
         return keys, indexes
 
     @classmethod
-    def from_charcode(cls, s: "Extractor", keys: list = []) -> tuple[list, list]:
+    def from_charcode(cls, s: "Extractor", keys: list = [], indexes: list = []) -> tuple[list, list]:
         raw_values = []
 
-        if keys:
+        if indexes:
+            try:
+                map_ = _re(Patterns.MAP, s.script, l=False)
+                map_arg = map_.group(1)
+                map_body = map_.group(2)
+
+            except ValueError:
+                indexes = s._get_indexes()
+                raw_values = [int(i) for i in indexes]
+
+            else:
+                if m := re.search(Patterns.BITWISE2, map_body):
+                    flag = _re(Patterns.SET_DEF_FLAG, map_body, l=False).group(1)
+                    func = s.bitwise[int(flag)]
+
+                    var_name = m.group(1) if m.group(1) != map_arg else m.group(2)
+                    var_value = _re(Patterns.VAR.format(var_name), s.script, l=False).group(1)
+
+                    raw_values = [func(int(var_value), int(i)) for i in indexes]
+
+        elif keys:
             map_ = _re(Patterns.MAP, s.script, l=False)
             map_arg = map_.group(1)
             map_body = map_.group(2)
@@ -116,39 +164,43 @@ class Resolvers:
             if re.search(Patterns.PARSE_INT.format(map_arg), map_body):
                 raw_values = [int(k, 16) for k in keys]
 
-            elif m := re.search(Patterns.BITWISE2, map_body):
-                flag = _re(Patterns.SET_DEF_FLAG, map_body, l=False).group(1)
-                func = s.bitwise[flag]
-
-                var_name = m.group(1) if m.group(1) != map_arg else m.group(2)
-                var_value = _re(Patterns.VAR.format(var_name), s.script, l=False).group(1)
-
-                raw_values = [func(var_value, int(i)) for i in keys]
-
             # elif m := re.search(bitwise3_pattern, map_body):
             #     ...
-
-        else:
-            indexes = s._get_indexes()
-            raw_values = [int(i) for i in indexes]
 
         return [chr(v) for v in raw_values], list(range(0, len(raw_values)))
 
     @classmethod
     def fallback(cls, s: "Extractor") -> tuple[list, list]:
-        to_try = [cls.slice, cls.map, cls.from_charcode]
+        to_try = [cls.node_proc, cls.slice, cls.map, cls.from_charcode]
 
         for t in to_try:
             try:
-                r = t(s)
-                break
+                return t(s)
             except ValueError:
                 continue
 
         else:
-            raise ValueError("key not found =(")
+            raise ValueError("no key found =(")
 
-        return r
+    @classmethod
+    def node_proc(cls, s: "Extractor") -> tuple[list, list]:
+        to_execute = _re(Patterns.GET_KEY, s.script, l=False).group(1)
+        to_execute = cls._prepare(to_execute, s)
+
+        tmp = tempfile.mktemp()
+        with open(tmp, "w") as f:
+            f.write(to_execute)
+
+        # i hate this way of doing things
+        # might think of sum else later
+
+        proc = subprocess.run(["node", tmp], capture_output=True, text=True)
+        os.remove(tmp)
+        if proc.returncode != 0:
+            raise OSError(proc.stderr)
+
+        key = proc.stdout.strip()
+        return list(key), list(range(0, len(key)))
 
     @classmethod
     def resolve(cls, flags: int, s: "Extractor") -> bytes:
@@ -163,7 +215,7 @@ class Resolvers:
             keys, indexes = cls.slice(s)
 
         if flags & ResolverFlags.FROMCHARCODE:
-            keys, indexes = cls.from_charcode(s, keys)
+            keys, indexes = cls.from_charcode(s, keys, indexes)
 
         if flags & ResolverFlags.FALLBACK:
             keys, indexes = cls.fallback(s)
@@ -331,12 +383,10 @@ class Extractor:
         keygen_body = keygen_func.group(1)
 
         functions: list[str] = []
-        print(keygen_body)
 
         for i in re.findall(Patterns.GET, keygen_body):
             functions.append(self._get(i))
 
-        print(functions)
         flags = 0
 
         for f in functions:
@@ -390,8 +440,6 @@ class Extractor:
             raise ValueError("no sources found")
 
         key = await self._get_secret_key()
-        print(key.decode())
-
         sources = json.loads(decrypt_sources(key, resp["sources"]))
 
         resp["sources"] = sources
@@ -403,7 +451,7 @@ class Extractor:
 
 
 async def main():
-    url = "https://megacloud.blog/embed-2/v2/e-1/K18vG6wteK42?k=1&autoPlay=1&oa=0&asi=1"
+    url = "	https://megacloud.blog/embed-2/v2/e-1/4bhHN8KmRgir?k=1&autoPlay=1&oa=0&asi=1"
     a = Extractor(url)
     print(json.dumps(await a.extract(), indent=4))
 
