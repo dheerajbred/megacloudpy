@@ -10,10 +10,159 @@ import aiohttp
 from typing import Awaitable, Callable, TypeVar, overload, Literal
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
+from enum import StrEnum, IntEnum
+
 
 user_agent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 base_url = "https://megacloud.blog"
 T = TypeVar("T")
+
+
+class ResolverFlags(IntEnum):
+    MAP = 1 << 0
+    REVERSE = 1 << 1
+    FROMCHARCODE = 1 << 2
+    SLICE = 1 << 3
+    FALLBACK = 1 << 4
+
+
+class Patterns(StrEnum):
+    _FUNC = r"[\w$]{3}\.[\w$]{2}"
+    _FUNC2 = r"[\w$]\.[\w$]{2}"
+
+    SOURCE_ID = r"embed-2/v2/e-1/([A-z0-9]+)\?"
+
+    IDX = r'"(\d+)"'
+    VAR = r"\s+{}=(\d+);"
+
+    XOR_KEY = r"\)\('(.+)'\)};"
+    STRING = r"function [\w$]{2}\(\){return \"(.+?)\";}"
+    DELIMITER = r"[\w$]{3}=\w\.[\w$]{2}\([\w$]{3},'(.)'\);"
+
+    BITWISE_SWITCHCASE = r"\w\[\d+\]=\(function\([\w$]+\)[{\d\w$:\(\),= ]+;switch\([\w$]+\){([^}]+)}"
+    BITWISE_OPERATION = r"case (\d+):([\w\[\]\-+|><^* =$]+);break;"
+
+    SLICES = rf"case\s(\d{{1,2}}):{_FUNC2}\({_FUNC2}\(\),[\w$]{{3}},{_FUNC2}\({_FUNC2}\([\w$]{{3}},([\d\-]+),[\d\-]+\),[\d\-]+,([\d\-]+)\)\)"
+
+    _GET1_INDEX = r'+?"?(\d+)"?(?:( [|\-\+*><]+ "?\d+"?))?'
+    GET1 = rf"{_FUNC}\(\{_GET1_INDEX}\)"
+    GET2 = rf'{_FUNC}\({_FUNC}\("?(\d+)"?,"?(\d+)"?\)\)'
+    GET3 = rf'{_FUNC}\({_FUNC}\("?(\d+)"?,"?(\d+)"?,{_FUNC}\((\d)\)\)\)'
+    GET = f"{GET1}|{GET2}|{GET3}"
+
+    INDEX_ARRAY_CONTENT = r'\w=\[((?!arguments)[\w\d.$\(\)",+]+)\];'
+    INDEX_ARRAY_ITEM = rf'({_FUNC}\([\w",\(\)]+\))|({_FUNC}\("?\d+"?,"?\d+"?,{_FUNC}\(\d+\)\))|(\d+)'
+
+    KEY_ARRAY_CONTENT = rf'\w=\[((?!arguments)[\w\d.$\(\)",+]+)\];'
+    GET_KEY = rf'var [\w$,]{{28,}};(?:{_FUNC}\(\+?"?\d+"?\);)?[\w$]+=([\w$.\(\)\+,"]+);'
+
+    KEYGEN = r"var [\w$,]{28,};.+?\w=\(\)=>{(.+?)};"
+    MAP = r"\((\w)=>{(.+?return.+?;)"
+
+    PARSE_INT = r'\w+\({},\+?"16"?\)'
+    BITWISE2 = rf"{_FUNC}\((\w),(\w\))"
+    BITWISE3 = rf'{_FUNC}\("?(\d+)"?,"?(\d+)"?,{_FUNC}\((\d)\)\)'
+    SET_DEF_FLAG = rf'{_FUNC}\(\+?"?(\d+)"?\)'
+
+
+class Resolvers:
+    @staticmethod
+    def _get_key(s: "Extractor") -> str:
+        fcall = _re(Patterns.GET_KEY, s.script, l=False)
+        args = _re(Patterns.GET, fcall.group(1), l=False)
+
+        return s._get(args.groups()).replace("-", "")
+
+    @staticmethod
+    def _get_keys(s: "Extractor") -> list[str]:
+        key_array_items = _re(Patterns.KEY_ARRAY_CONTENT, s.script, l=True)[0]
+        func_calls = re.split(r"(?<=\)),(?=\w)", key_array_items)
+
+        keys = []
+        for fcall in func_calls:
+            args = _re(Patterns.GET, fcall, l=False).groups()
+            keys.append(s._get(args))
+
+        return keys
+
+    @classmethod
+    def slice(cls, s: "Extractor") -> str:
+        key = cls._get_key(s)
+        if key.endswith("="):
+            key = base64.b64decode(key).decode()
+
+        return key
+
+    @classmethod
+    def map(cls, s: "Extractor") -> str:
+        keys = cls._get_keys(s)
+        indexes = s._get_indexes()
+
+        key = "".join(keys[i] for i in indexes)
+        return key
+
+    @classmethod
+    def from_charcode(cls, s: "Extractor") -> str:
+        keys = cls._get_keys(s)
+        bitwise = s.bitwise
+        raw_values = []
+
+        map_ = _re(Patterns.MAP, s.script, l=False)
+        map_arg = map_.group(1)
+        map_body = map_.group(2)
+
+        if re.search(Patterns.PARSE_INT.format(map_arg), map_body):
+            raw_values = [int(k, 16) for k in keys]
+
+        elif m := re.search(Patterns.BITWISE2, map_body):
+            flag = _re(Patterns.SET_DEF_FLAG, map_body, l=False).group(1)
+            func = bitwise[flag]
+
+            var_name = m.group(1) if m.group(1) != map_arg else m.group(2)
+            var_value = _re(Patterns.VAR.format(var_name), s.script, l=False).group(1)
+
+            raw_values = [func(var_value, int(i)) for i in keys]
+
+        # elif m := re.search(bitwise3_pattern, map_body):
+        #     ...
+
+        return "".join([chr(v) for v in raw_values])
+
+    @classmethod
+    def fallback(cls, s: "Extractor") -> str:
+        to_try = [cls.slice, cls.map, cls.from_charcode]
+        for t in to_try:
+            try:
+                key = t(s)
+                break
+            except ValueError:
+                continue
+
+        else:
+            raise ValueError("key not found =(")
+
+        return key
+
+    @classmethod
+    def resolve(cls, flags: int, s: "Extractor") -> bytes:
+        key = ""
+
+        if flags & ResolverFlags.MAP:
+            key = cls.map(s)
+
+        if flags & ResolverFlags.SLICE:
+            key = cls.slice(s)
+
+        if flags & ResolverFlags.REVERSE:
+            key = "".join(reversed(key))
+
+        if flags & ResolverFlags.FROMCHARCODE:
+            key = cls.from_charcode(s)
+
+        if flags & ResolverFlags.FALLBACK:
+            key = cls.fallback(s)
+
+        return key.encode()
 
 
 async def make_request(url: str, headers: dict, params: dict, func: Callable[[aiohttp.ClientResponse], Awaitable[T]]) -> T:
@@ -23,12 +172,12 @@ async def make_request(url: str, headers: dict, params: dict, func: Callable[[ai
 
 
 @overload
-def _re(pattern: str, string: str, name: str, *, l: Literal[True]) -> list[str]: ...
+def _re(pattern: Patterns | str, string: str, *, l: Literal[True]) -> list[str]: ...
 @overload
-def _re(pattern: str, string: str, name: str, *, l: Literal[False]) -> re.Match: ...
+def _re(pattern: Patterns | str, string: str, *, l: Literal[False]) -> re.Match: ...
 
 
-def _re(pattern: str, string: str, name: str, *, l: bool) -> re.Match | list[str]:
+def _re(pattern: Patterns | str, string: str, *, l: bool) -> re.Match | list[str]:
     if l:
         v = re.findall(pattern, string)
 
@@ -36,140 +185,10 @@ def _re(pattern: str, string: str, name: str, *, l: bool) -> re.Match | list[str
         v = re.search(pattern, string)
 
     if not v:
-        raise ValueError(f"{name} not found")
+        msg = f"{pattern.name} not found" if isinstance(pattern, Patterns) else f"{pattern} not found"
+        raise ValueError(msg)
 
     return v
-
-
-def generate_bitwise_func(operation: str) -> Callable:
-    operation = re.sub(r"[\w$]{2}", "args", operation)
-    if any(i in operation for i in (">", "<")):
-        v = operation.split()
-        v[-1] = f"({v[-1]} & 31)"
-        operation = " ".join(v)
-
-    return lambda *args: eval(operation)
-
-
-def get_bitwise_operations(script: str) -> dict[int, Callable]:
-    bitwise_switchcase_pattern = r"\w\[\d+\]=\(function\([\w$]+\)[{\d\w$:\(\),= ]+;switch\([\w$]+\){([^}]+)}"
-    bitwise_operation_pattern = r"case (\d+):([\w\[\]\-+|><^* =$]+);break;"
-
-    switchcase_section = _re(bitwise_switchcase_pattern, script, "bitwise switchcase section", l=False).group(1)
-
-    funcs = {}
-
-    for num, operation in _re(bitwise_operation_pattern, switchcase_section, "bitwise operation", l=True):
-        funcs[int(num)] = generate_bitwise_func(operation.split("=")[1])
-
-    return funcs
-
-
-def generate_sequence(n: int) -> list[int]:
-    res = [5, 8, 14, 11]
-    if n <= 4:
-        return res
-
-    for i in range(2, n - 2):
-        res.append(res[i] + i + 3 - (i % 2))
-
-    return res
-
-
-def get_array_slices(script: str) -> list[tuple[int, ...]]:
-    func_pattern = r"\w\.[\w$]{2}"
-    pattern = rf"case\s(\d{{1,2}}):{func_pattern}\({func_pattern}\(\),[\w$]{{3}},{func_pattern}\({func_pattern}\([\w$]{{3}},([\d\-]+),[\d\-]+\),[\d\-]+,([\d\-]+)\)\)"
-
-    pairs = tuple(map(lambda t: tuple(map(int, t)), _re(pattern, script, "pairs", l=True)))
-    order_map = {v: i for i, v in enumerate(generate_sequence(len(pairs)))}
-
-    pairs = list(sorted(pairs, key=lambda t: order_map[t[0]]))
-
-    return pairs
-
-
-def shuffle_array(script: str, array: list[str]) -> list[str]:
-    slices = get_array_slices(script)
-    for _, array_idx, tail_idx in slices:
-        array, tail = array[:array_idx], array[array_idx:]
-        array = tail[:tail_idx] + array
-
-    return array
-
-
-def get_key_indexes(script: str) -> list[int]:
-    func_pattern = r"\w{3}\.[\w$_]{2}"
-    array_content_pattern = r'\w=\[((?!arguments)[\w\d.$\(\)",+]+)\];'
-    array_item_pattern = rf'({func_pattern}\([\w",\(\)]+\))|({func_pattern}\("?\d+"?,"?\d+"?,{func_pattern}\(\d+\)\))|(\d+)'
-    indexes = []
-
-    array_items = _re(array_content_pattern, script, "index array", l=True)[-1]
-
-    for m in _re(array_item_pattern, array_items, "index array items", l=True):
-        idx = m[0] or m[1] or m[2]
-
-        if not idx.isdigit():
-            idx = _re(r'"(\d+)"', idx, "index in index array item", l=False).group(1)
-
-        indexes.append(int(idx))
-
-    return indexes
-
-
-@overload
-def get_key(script: str, string_array: list[str], *, return_parts: Literal[True]) -> list[str]: ...
-@overload
-def get_key(script: str, string_array: list[str], *, return_parts: Literal[False]) -> str: ...
-
-
-def get_key(script: str, string_array: list[str], *, return_parts: bool) -> list[str] | str:
-    func_pattern = r"[\w$]{3}\.[\w$]{2}"
-    call1_pattern = rf'{func_pattern}\(\+?"?(\d+)"?\)'
-    call2_pattern = rf'{func_pattern}\({func_pattern}\("?(\d+)"?,"?(\d+)"?\)\)'
-    call3_pattern = rf'{func_pattern}\({func_pattern}\("?(\d+)"?,"?(\d+)"?,{func_pattern}\((\d)\){{3}}'
-
-    bitwise = get_bitwise_operations(script)
-
-    def _eval_fcall(fcall: str) -> str:
-        if m := re.match(call1_pattern, fcall):
-            i = int(m.group(1))
-            v = string_array[i]
-
-        elif m := re.match(call2_pattern, fcall) or re.match(call3_pattern, fcall):
-            i1 = int(m.group(1))
-            i2 = int(m.group(2))
-            flag = int(m.group(3)) if len(m.groups()) == 3 else 0
-
-            i = bitwise[flag](i1, i2)
-            v = string_array[i]
-
-        else:
-            raise ValueError(f"unmatched {fcall}")
-
-        return v
-
-    if return_parts:
-        array_content_pattern = rf'\w=\[((?!arguments)[\w\d.$\(\)",+]+)\];'
-
-        try:
-            array_items = _re(array_content_pattern, script, "", l=True)[0]
-        except ValueError:
-            return []
-
-        func_calls = re.split(r"(?<=\)),(?=\w)", array_items)
-        parts = [_eval_fcall(fcall) for fcall in func_calls]
-
-        return parts
-
-    else:
-        key_func_pattern = rf'var [\w$,]{{28,}};(?:{func_pattern}\(\+?"?\d+"?\);)?[\w$]+=([\w$.\(\)\+,"]+);'
-        fcall = _re(key_func_pattern, script, "key function call", l=False).group(1)
-        key = _eval_fcall(fcall).replace("-", "")
-
-        if key.endswith("="):
-            key = base64.b64decode(key).decode()
-
-        return key
 
 
 def derive_key_and_iv(password: bytes) -> tuple[bytes, bytes]:
@@ -199,148 +218,193 @@ def decrypt_sources(key: bytes, value: str) -> str:
     return unpad(result, AES.block_size).decode()
 
 
-def _resolve_karr_iarr(script: str, string_array: list[str]) -> bytes:
-    keys = get_key(script, string_array, return_parts=True)
-    indexes = get_key_indexes(script)
+def generate_sequence(n: int) -> list[int]:
+    res = [5, 8, 14, 11]
+    if n <= 4:
+        return res
 
-    key = "".join(keys[i] for i in indexes)
-    return key.encode()
+    for i in range(2, n - 2):
+        res.append(res[i] + i + 3 - (i % 2))
 
-
-def _resolve_key_in_iarr(script: str) -> bytes:
-    indexes = get_key_indexes(script)
-    key = "".join(chr(i) for i in indexes)
-
-    return key.encode()
+    return res
 
 
-def _resolve_key_in_var(script: str, string_array: list[str]) -> bytes:
-    key = get_key(script, string_array, return_parts=False)
-    return key.encode()
+class Extractor:
+    def __init__(self, embed_url: str) -> None:
+        self.embed_url = embed_url
 
+        self.script: str
+        self.string_array: list[str]
+        self.bitwise: dict[int, Callable]
 
-def _resolve_64arr(script: str, string_array: list[str], map_arg: str, map_body: str) -> bytes:
-    keys = get_key(script, string_array, return_parts=True)
-    bitwise = get_bitwise_operations(script)
+    def _generate_bitwise_func(self, operation: str) -> Callable:
+        operation = re.sub(r"[\w$]{2}", "args", operation)
+        if any(i in operation for i in (">", "<")):
+            v = operation.split()
+            v[-1] = f"({v[-1]} & 31)"
+            operation = " ".join(v)
 
-    func_pattern = r"\w{3}\.[\w$_]{2}"
+        return lambda *args: eval(operation)
 
-    parse_int_pattern = rf'\w+\({map_arg},\+?"16"?\)'
-    bitwise2_pattern = rf"{func_pattern}\((\w),(\w\))"
-    bitwise3_pattern = rf'{func_pattern}\("?(\d+)"?,"?(\d+)"?,{func_pattern}\((\d)\){{2}}'
+    def _get_bitwise_operations(self) -> dict[int, Callable]:
+        functions = {}
 
-    set_def_flag_pattern = rf'{func_pattern}\(\+?"?(\d+)"?\)'
+        switchcase_section = _re(Patterns.BITWISE_SWITCHCASE, self.script, l=False).group(1)
+        for num, operation in _re(Patterns.BITWISE_OPERATION, switchcase_section, l=True):
+            functions[int(num)] = self._generate_bitwise_func(operation.split("=")[1])
 
-    raw_values = []
-    if re.search(parse_int_pattern, map_body):
-        raw_values = [int(k, 16) for k in keys]
+        return functions
 
-    elif m := re.search(bitwise2_pattern, map_body):
-        flag = _re(set_def_flag_pattern, map_body, "set flag func call", l=False).group(1)
-        func = bitwise[flag]
+    def _get_array_slices(self) -> list[tuple[int, ...]]:
+        pairs = tuple(map(lambda t: tuple(map(int, t)), _re(Patterns.SLICES, self.script, l=True)))
+        order_map = {v: i for i, v in enumerate(generate_sequence(len(pairs)))}
 
-        var_name = m.group(1) if m.group(1) != map_arg else m.group(2)
-        var_value = _re(rf"\s+{var_name}=(\d+);", script, "bitwise static value", l=False).group(1)
+        pairs = list(sorted(pairs, key=lambda t: order_map[t[0]]))
+        return pairs
 
-        raw_values = [func(var_value, int(i)) for i in keys]
+    def _shuffle_array(self, array: list[str]) -> list[str]:
+        slices = self._get_array_slices()
+        for _, array_idx, tail_idx in slices:
+            array, tail = array[:array_idx], array[array_idx:]
+            array = tail[:tail_idx] + array
 
-    # elif m := re.search(bitwise3_pattern, map_body):
-    #     ...
+        return array
 
-    return "".join([chr(v) for v in raw_values]).encode()
+    def _get(self, values) -> str:
+        values = list(filter(None, values))
 
+        if len(values) == 1 or not values[1].isdigit():
+            if len(values) == 2:
+                if any(i in values[1] for i in (">", "<")):
+                    v = values[-1].split()
+                    v[-1] = f"({v[-1]} & 31)"
+                    values[-1] = " ".join(v)
 
-def _resolve_key(script: str, string_array: list[str]) -> bytes:
-    keygen_func_pattern = r"var [\w$,]{28,};.+?\w=\(\)=>{(.+?)};"
-    map_pattern = r"\((\w)=>{(.+?return.+?;)"
+                e = f"{values[0]}{values[1]}"
+                i = eval(e)
 
-    keygen_func = _re(keygen_func_pattern, script, "map function", l=False)
-    keygen_body = keygen_func.group(1)
+            else:
+                i = int(values[0])
 
-    try:
-        map_func = _re(map_pattern, keygen_body, "map body", l=False)
-        map_arg = map_func.group(1)
-        map_body = map_func.group(2)
+            v = self.string_array[i]
 
-        string = map_body
-        versions = {
-            r"return \w\[\w\];": (_resolve_karr_iarr, script, string_array),
-            r"return .+": (_resolve_64arr, script, string_array, map_arg, map_body),
+        elif len(values) > 1:
+            i1 = int(values[0])
+            i2 = int(values[1])
+            flag = int(values[2]) if len(values) == 3 else 0
+
+            i = self.bitwise[flag](i1, i2)
+            v = self.string_array[i]
+
+        else:
+            raise ValueError(f"can't get {values}")
+
+        return v
+
+    def _get_indexes(self) -> list[int]:
+        indexes = []
+        array_items = _re(Patterns.INDEX_ARRAY_CONTENT, self.script, l=True)[-1]
+
+        for m in _re(Patterns.INDEX_ARRAY_ITEM, array_items, l=True):
+            idx = m[0] or m[1] or m[2]
+
+            if not idx.isdigit():
+                idx = _re(Patterns.IDX, idx, l=False).group(1)
+
+            indexes.append(int(idx))
+
+        return indexes
+
+    def _resolve_key(self) -> bytes:
+        keygen_func = _re(Patterns.KEYGEN, self.script, l=False)
+        keygen_body = keygen_func.group(1)
+
+        functions = []
+        print(keygen_body)
+
+        for i in re.findall(Patterns.GET, keygen_body):
+            functions.append(self._get(i))
+
+        print(functions)
+        flags = 0
+
+        if "slice" in functions:
+            flags |= ResolverFlags.SLICE
+
+        elif "reverse" in functions:
+            flags |= ResolverFlags.SLICE
+            flags |= ResolverFlags.REVERSE
+
+        elif "map" in functions:
+            if "fromCharCode" in functions:
+                flags |= ResolverFlags.FROMCHARCODE
+
+            else:
+                flags |= ResolverFlags.MAP
+
+        else:
+            flags |= ResolverFlags.FALLBACK
+
+        key = Resolvers.resolve(flags, self) or b":P"
+        return key
+
+    async def _get_secret_key(self) -> bytes:
+        strings = ""
+
+        script_url = f"{base_url}/js/player/a/v2/pro/embed-1.min.js"
+        script_version = int(time.time())
+        self.script = await make_request(script_url, {}, {"v": script_version}, lambda i: i.text())
+
+        xor_key = _re(Patterns.XOR_KEY, self.script, l=False).group(1)
+        char_sequence = parse.unquote(_re(Patterns.STRING, self.script, l=False).group(1))
+        delim = _re(Patterns.DELIMITER, self.script, l=False).group(1)
+
+        for i in range(len(char_sequence)):
+            a = ord(char_sequence[i])
+            b = ord(xor_key[i % len(xor_key)])
+
+            idx = a ^ b
+            strings += chr(idx)
+
+        string_array = strings.split(delim)
+        self.string_array = self._shuffle_array(string_array)
+        self.bitwise = self._get_bitwise_operations()
+
+        key = self._resolve_key()
+        return key
+
+    async def extract(self) -> dict:
+        headers = {
+            "User-Agent": user_agent,
+            "Referer": base_url,
+            "Origin": base_url,
         }
 
-    except ValueError:
-        string = keygen_body
-        versions = {
-            r"return \w\[|[\w$]+\(": (_resolve_key_in_var, script, string_array),
-            r"return \w+\[": (_resolve_key_in_iarr, script),
-        }
+        id = _re(Patterns.SOURCE_ID, self.embed_url, l=False).group(1)
+        get_src_url = f"{base_url}/embed-2/v2/e-1/getSources"
 
-    for p, t in versions.items():
-        if re.search(p, string):
-            func = t[0]
-            args = t[1:]
+        resp = await make_request(get_src_url, headers, {"id": id}, lambda i: i.json())
 
-            return func(*args)
+        if not resp["sources"]:
+            raise ValueError("no sources found")
 
+        key = await self._get_secret_key()
+        print(key.decode())
 
-async def get_secret_key() -> bytes:
-    script_url = f"{base_url}/js/player/a/v2/pro/embed-1.min.js"
-    script_version = int(time.time())
+        sources = json.loads(decrypt_sources(key, resp["sources"]))
 
-    script = await make_request(script_url, {}, {"v": script_version}, lambda i: i.text())
-    strings = ""
+        resp["sources"] = sources
 
-    xor_key_pattern = r"\)\('(.+)'\)};"
-    string_pattern = r"function [\w$]{2}\(\){return \"(.+?)\";}"
-    delim_pattern = r"[\w$]{3}=\w\.[\w$]{2}\([\w$]{3},'(.)'\);"
+        resp["intro"] = resp["intro"]["start"], resp["intro"]["end"]
+        resp["outro"] = resp["outro"]["start"], resp["outro"]["end"]
 
-    xor_key = _re(xor_key_pattern, script, "xor key", l=False).group(1)
-    char_sequence = parse.unquote(_re(string_pattern, script, "char sequence", l=False).group(1))
-    delim = _re(delim_pattern, script, "delimiter", l=False).group(1)
-
-    for i in range(len(char_sequence)):
-        a = ord(char_sequence[i])
-        b = ord(xor_key[i % len(xor_key)])
-
-        idx = a ^ b
-        strings += chr(idx)
-
-    string_array = strings.split(delim)
-    string_array = shuffle_array(script, string_array)
-
-    key = _resolve_key(script, string_array)
-    return key
-
-
-async def extract(embed_url: str) -> dict:
-    headers = {
-        "User-Agent": user_agent,
-        "Referer": base_url,
-        "Origin": base_url,
-    }
-
-    id = _re(r"embed-2/v2/e-1/([A-z0-9]+)\?", embed_url, "source id", l=False).group(1)
-    get_src_url = f"{base_url}/embed-2/v2/e-1/getSources"
-
-    resp = await make_request(get_src_url, headers, {"id": id}, lambda i: i.json())
-
-    if not resp["sources"]:
-        raise ValueError("no sources found")
-
-    key = await get_secret_key()
-    sources = json.loads(decrypt_sources(key, resp["sources"]))
-
-    resp["sources"] = sources
-
-    resp["intro"] = resp["intro"]["start"], resp["intro"]["end"]
-    resp["outro"] = resp["outro"]["start"], resp["outro"]["end"]
-
-    return resp
+        return resp
 
 
 async def main():
-    url = "https://megacloud.blog/embed-2/v2/e-1/n0SVutpGWsDC?k=1&autoPlay=1&oa=0&asi=1"
-    print(json.dumps(await extract(url), indent=4))
+    url = "https://megacloud.blog/embed-2/v2/e-1/K18vG6wteK42?k=1&autoPlay=1&oa=0&asi=1"
+    a = Extractor(url)
+    print(json.dumps(await a.extract(), indent=4))
 
 
 asyncio.run(main())
