@@ -27,7 +27,8 @@ class ResolverFlags(IntEnum):
     FROMCHARCODE = 1 << 2
     SLICE = 1 << 3
     SPLIT = 1 << 4
-    FALLBACK = 1 << 5
+    ABC = 1 << 5
+    FALLBACK = 1 << 6
 
 
 class Patterns(StrEnum):
@@ -39,6 +40,7 @@ class Patterns(StrEnum):
 
     IDX = r'"(\d+)"'
     VAR = r';{}=\+?"?(\d+)"?;'
+    DICT = r"[\w$]{2}=\{\}"
 
     XOR_KEY = r"\)\('(.+)'\)};"
     STRING = r"function [\w$]{2}\(\){return \"(.+?)\";}"
@@ -76,6 +78,11 @@ class Patterns(StrEnum):
 
     GET_KEY = r"var [\w$,]{28,};(.+?)try"
     GET_KEY_FUNC = r"(\w)=\(\)=>{(.+?)};"
+    GET_KEY_FUNC_RETURN = r"\w=\(\)=>{.+?return(.+?);[\}\)]"
+
+    DICT_SET1 = rf"[\w$]{{2}}\[(?:{GET_FUNC})\]=(?:{GET_FUNC})"
+    DICT_SET2 = rf"[\w$]{{2}}\[(?:{GET_FUNC})\]=\(\)=>(?:{{.+?return {GET_FUNC})"
+    DICT_SET = f"{DICT_SET1}|{DICT_SET2}"
 
 
 class Resolvers:
@@ -170,8 +177,32 @@ class Resolvers:
         return [chr(v) for v in raw_values], list(range(0, len(raw_values)))
 
     @classmethod
+    def abc(cls, s: "Extractor") -> tuple[list, list]:
+        values = {}
+        c = _re(Patterns.GET_KEY, s.script, l=False).group(1)
+
+        for f in _re(Patterns.DICT_SET, c, l=True):
+            f = list(filter(None, f))
+
+            k = s._get(_re(Patterns.GET, f[0], l=False).groups())
+            v = s._get(_re(Patterns.GET, f[1], l=False).groups())
+
+            values[k] = v
+
+        order = _re(Patterns.GET_KEY_FUNC_RETURN, c, l=False).group(1)
+        order = order.replace("()", "")
+        order = re.sub(rf"\w\[(.+?)\]", r"values[\1]", order)
+
+        for f in _re(Patterns.GET_FUNC, order, l=True):
+            v = s._get(_re(Patterns.GET, f[0], l=False).groups())
+            order = order.replace(f[0], f'"{v}"')
+
+        key = eval(order)
+        return list(key), list(range(0, len(key)))
+
+    @classmethod
     def fallback(cls, s: "Extractor") -> tuple[list, list]:
-        to_try = [cls.node_proc, cls.slice, cls.map, cls.from_charcode]
+        to_try = [cls.slice, cls.map, cls.from_charcode]
 
         for t in to_try:
             try:
@@ -181,26 +212,6 @@ class Resolvers:
 
         else:
             raise ValueError("no key found =(")
-
-    @classmethod
-    def node_proc(cls, s: "Extractor") -> tuple[list, list]:
-        to_execute = _re(Patterns.GET_KEY, s.script, l=False).group(1)
-        to_execute = cls._prepare(to_execute, s)
-
-        tmp = tempfile.mktemp()
-        with open(tmp, "w") as f:
-            f.write(to_execute)
-
-        # i hate this way of doing things
-        # might think of sum else later
-
-        proc = subprocess.run(["node", tmp], capture_output=True, text=True)
-        os.remove(tmp)
-        if proc.returncode != 0:
-            raise OSError(proc.stderr)
-
-        key = proc.stdout.strip()
-        return list(key), list(range(0, len(key)))
 
     @classmethod
     def resolve(cls, flags: int, s: "Extractor") -> bytes:
@@ -219,6 +230,9 @@ class Resolvers:
 
         if flags & ResolverFlags.FALLBACK:
             keys, indexes = cls.fallback(s)
+
+        if flags & ResolverFlags.ABC:
+            keys, indexes = cls.abc(s)
 
         key = "".join(keys[i] for i in indexes)
 
@@ -393,6 +407,9 @@ class Extractor:
             if f.upper() in ResolverFlags._member_names_:
                 flags |= ResolverFlags[f.upper()]
 
+            elif len(f) == 1 and ord(f) in range(97, 123):
+                flags |= ResolverFlags.ABC
+
         if not flags:
             flags |= ResolverFlags.FALLBACK
 
@@ -451,7 +468,7 @@ class Extractor:
 
 
 async def main():
-    url = "	https://megacloud.blog/embed-2/v2/e-1/4bhHN8KmRgir?k=1&autoPlay=1&oa=0&asi=1"
+    url = "https://megacloud.blog/embed-2/v2/e-1/Y3WMUobtMp6T?k=1&autoPlay=1&oa=0&asi=1"
     a = Extractor(url)
     print(json.dumps(await a.extract(), indent=4))
 
