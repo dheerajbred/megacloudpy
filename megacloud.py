@@ -2,9 +2,6 @@ import base64
 import hashlib
 import json
 import time
-import subprocess
-import os
-import tempfile
 import asyncio
 from urllib import parse
 import re
@@ -16,8 +13,6 @@ from Crypto.Util.Padding import unpad
 from enum import StrEnum, IntEnum
 
 
-user_agent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-base_url = "https://megacloud.blog"
 T = TypeVar("T")
 
 
@@ -39,7 +34,7 @@ class Patterns(StrEnum):
     SOURCE_ID = r"embed-2/v2/e-1/([A-z0-9]+)\?"
 
     IDX = r'"(\d+)"'
-    VAR = r';{}=\+?"?(\d+)"?;'
+    VAR = r'[ ;]{name}=(?:\+?"?(\d+)"?;|[\w$][\w$][\w$]\.[\w$][\w$]\(((?:"?\d+"?,?)+)\))'
     DICT = r"[\w$]{2}=\{\}"
 
     XOR_KEY = r"\)\('(.+)'\)};"
@@ -47,20 +42,17 @@ class Patterns(StrEnum):
     DELIMITER = r"[\w$]{3}=\w\.[\w$]{2}\([\w$]{3},'(.)'\);"
 
     BITWISE_SWITCHCASE = r"\w\[\d+\]=\(function\([\w$]+\)[{\d\w$:\(\),= ]+;switch\([\w$]+\){([^}]+)}"
-    BITWISE_OPERATION = r"case (\d+):([\w\[\]\-+|><^* =$]+);break;"
+    BITWISE_OPERATION = r"case (\d+):([\w\[\]\-+|><^* =$\(\)]+);break;"
+    BITWISE_DEF_FLAG_FUNC = r"\w\[\d+\]=\(function\([\w$]+\).+?;switch\([\w$]+\){[^,]+,([\w$]+)"
+    SET_DEF_FLAG = rf"{_FUNC}\((\d+)\)"
 
     SLICES = rf"case\s(\d{{1,2}}):{_FUNC2}\({_FUNC2}\(\),[\w$]{{3}},{_FUNC2}\({_FUNC2}\([\w$]{{3}},([\d\-]+),[\d\-]+\),[\d\-]+,([\d\-]+)\)\)"
 
-    GET1_FUNC = rf'({_FUNC}\(\+?"?\d+"?(?: [|\-\+*><^]+ "?\d+"?)?\))'
-    GET2_FUNC = rf'({_FUNC}\({_FUNC}\("?\d+"?,"?\d+"?\)\))'
-    GET3_FUNC = rf'({_FUNC}\({_FUNC}\("?\d+"?,"?\d+"?,{_FUNC}\(\d\)\)\))'
-    GET_FUNC = f"{GET1_FUNC}|{GET2_FUNC}|{GET3_FUNC}"
-
-    _GET1_INDEX = r'+?"?(\d+)"?(?:( [|\-\+*><^]+ "?\d+"?))?'
+    _GET1_INDEX = r'+?"?(\w+)"?( [|\-\+*><^]+ "?\w+"?)?'
     GET1 = rf"{_FUNC}\(\{_GET1_INDEX}\)"
-    GET2 = rf'{_FUNC}\({_FUNC}\("?(\d+)"?,"?(\d+)"?\)\)'
-    GET3 = rf'{_FUNC}\({_FUNC}\("?(\d+)"?,"?(\d+)"?,{_FUNC}\((\d)\)\)\)'
-    GET = f"{GET1}|{GET2}|{GET3}"
+    GET2 = rf'{_FUNC}\({_FUNC}\("?(\w+)"?,"?(\w+)"?\)\)'
+    GET3 = rf'{_FUNC}\({_FUNC}\("?(\w+)"?,"?(\w+)"?,{SET_DEF_FLAG}\)\)'
+    GET = f"({GET1}|{GET2}|{GET3})"
 
     INDEX_ARRAY_CONTENT = r'\w=\[((?!arguments)[\w\d.$\(\)",+]+)\];'
     INDEX_ARRAY_ITEM = rf'({_FUNC}\([\w",\(\)]+\))|({_FUNC}\("?\d+"?,"?\d+"?,{_FUNC}\(\d+\)\))|(\d+)'
@@ -74,24 +66,23 @@ class Patterns(StrEnum):
     PARSE_INT = r'\w+\({},\+?"16"?\)'
     BITWISE2 = rf"{_FUNC}\((\w),(\w\))"
     BITWISE3 = rf'{_FUNC}\("?(\d+)"?,"?(\d+)"?,{_FUNC}\((\d)\)\)'
-    SET_DEF_FLAG = rf'{_FUNC}\(\+?"?(\d+)"?\)'
 
     GET_KEY = r"var [\w$,]{28,};(.+?)try"
     GET_KEY_FUNC = r"(\w)=\(\)=>{(.+?)};"
     GET_KEY_FUNC_RETURN = r"\w=\(\)=>{.+?return(.+?);[\}\)]"
 
-    DICT_SET1 = rf"[\w$]{{2}}\[(?:{GET_FUNC})\]=(?:{GET_FUNC})"
-    DICT_SET2 = rf"[\w$]{{2}}\[(?:{GET_FUNC})\]=\(\)=>(?:{{.+?return {GET_FUNC})"
+    DICT_SET1 = rf"[\w$]{{2}}\[(?:{GET})\]=({GET})"
+    DICT_SET2 = rf"[\w$]{{2}}\[(?:{GET})\]=\(\)=>({{.+?return {GET})"
     DICT_SET = f"{DICT_SET1}|{DICT_SET2}"
 
 
 class Resolvers:
     @staticmethod
     def _get_key(s: "Extractor") -> str:
-        fcall = _re(Patterns.GET_KEY, s.script, l=False)
-        args = _re(Patterns.GET, fcall.group(1), l=False)
+        fcall = _re(Patterns.KEY_VAR, s.script, l=False).group(1)
+        args = _re(Patterns.GET, fcall, l=False).groups()
 
-        return s._get(args.groups()).replace("-", "")
+        return s._get(args[1:], fcall).replace("-", "")
 
     @staticmethod
     def _get_keys(s: "Extractor") -> list[str]:
@@ -101,25 +92,9 @@ class Resolvers:
         keys = []
         for fcall in func_calls:
             args = _re(Patterns.GET, fcall, l=False).groups()
-            keys.append(s._get(args))
+            keys.append(s._get(args[1:], ""))
 
         return keys
-
-    @staticmethod
-    def _prepare(to_execute: str, s: "Extractor") -> str:
-        for f in _re(Patterns.GET_FUNC, to_execute, l=True):
-            call = f[0]
-            string = s._get(_re(Patterns.GET, call, l=False).groups())
-
-            to_execute = to_execute.replace(call, f'"{string}"')
-
-        to_execute = re.sub(rf"if\({Patterns._FUNC}\(\)\)|if\({Patterns._FUNC3}\(\)\)", "if(1)", to_execute)
-        to_execute = re.sub(rf"{Patterns._FUNC}\(\);|{Patterns._FUNC3}\(\);", "", to_execute)
-
-        get_key_func_name = _re(Patterns.GET_KEY_FUNC, to_execute, l=False).group(1)
-        to_execute += f"console.log({get_key_func_name}());"
-
-        return to_execute
 
     @classmethod
     def slice(cls, s: "Extractor") -> tuple[list, list]:
@@ -130,11 +105,49 @@ class Resolvers:
         return list(key), list(range(0, len(key)))
 
     @classmethod
+    def abc(cls, s: "Extractor") -> tuple[list, list]:
+        values = {}
+        c = _re(Patterns.GET_KEY, s.script, l=False).group(1)
+
+        for f in _re(Patterns.DICT_SET, c, l=True):
+            i = 0 if f[0] else 17
+            key_idxs = list(filter(None, f[i + 1 : i + 8]))
+
+            context = f[i + 8]
+            value_idxs = list(filter(None, f[i + 10 : i + 17]))
+
+            k = s._get(key_idxs, c)
+            v = s._get(value_idxs, context)
+
+            values[k] = v
+
+        get_key_func = _re(Patterns.GET_KEY_FUNC, c, l=False).group(2)
+
+        order = get_key_func.split("return")[-1].split(";")[0]
+        order = order.replace("()", "")
+        order = re.sub(rf"\w\[(.+?)\]", r"\1", order)
+
+        for f in _re(Patterns.GET, order, l=True):
+            indexes = list(filter(None, f[1:]))
+
+            v = s._get(indexes, get_key_func)
+            order = order.replace(f[0], f'"{values[v]}"')
+
+        key = eval(order)
+        return list(key), list(range(0, len(key)))
+
+    @classmethod
     def map(cls, s: "Extractor") -> tuple[list, list]:
-        keys = cls._get_keys(s)
+        try:
+            keys = cls._get_keys(s)
+        except ValueError as e:
+            print(f"keys not found: {e}")
+            keys = []
+
         try:
             indexes = s._get_indexes()
-        except ValueError:
+        except ValueError as e:
+            print(f"indexes not found: {e}")
             indexes = []
 
         return keys, indexes
@@ -159,7 +172,7 @@ class Resolvers:
                     func = s.bitwise[int(flag)]
 
                     var_name = m.group(1) if m.group(1) != map_arg else m.group(2)
-                    var_value = _re(Patterns.VAR.format(var_name), s.script, l=False).group(1)
+                    var_value = _re(Patterns.VAR.format(name=var_name), s.script, l=False).group(1)
 
                     raw_values = [func(int(var_value), int(i)) for i in indexes]
 
@@ -177,30 +190,6 @@ class Resolvers:
         return [chr(v) for v in raw_values], list(range(0, len(raw_values)))
 
     @classmethod
-    def abc(cls, s: "Extractor") -> tuple[list, list]:
-        values = {}
-        c = _re(Patterns.GET_KEY, s.script, l=False).group(1)
-
-        for f in _re(Patterns.DICT_SET, c, l=True):
-            f = list(filter(None, f))
-
-            k = s._get(_re(Patterns.GET, f[0], l=False).groups())
-            v = s._get(_re(Patterns.GET, f[1], l=False).groups())
-
-            values[k] = v
-
-        order = _re(Patterns.GET_KEY_FUNC_RETURN, c, l=False).group(1)
-        order = order.replace("()", "")
-        order = re.sub(rf"\w\[(.+?)\]", r"values[\1]", order)
-
-        for f in _re(Patterns.GET_FUNC, order, l=True):
-            v = s._get(_re(Patterns.GET, f[0], l=False).groups())
-            order = order.replace(f[0], f'"{v}"')
-
-        key = eval(order)
-        return list(key), list(range(0, len(key)))
-
-    @classmethod
     def fallback(cls, s: "Extractor") -> tuple[list, list]:
         to_try = [cls.slice, cls.map, cls.from_charcode]
 
@@ -211,7 +200,7 @@ class Resolvers:
                 continue
 
         else:
-            raise ValueError("no key found =(")
+            raise ValueError("key not found =(")
 
     @classmethod
     def resolve(cls, flags: int, s: "Extractor") -> bytes:
@@ -221,6 +210,7 @@ class Resolvers:
 
         if flags & ResolverFlags.MAP:
             keys, indexes = cls.map(s)
+            print(keys, indexes)
 
         if flags & (ResolverFlags.SLICE | ResolverFlags.SPLIT):
             keys, indexes = cls.slice(s)
@@ -307,6 +297,14 @@ def generate_sequence(n: int) -> list[int]:
 
 
 class Extractor:
+    base_url = "https://megacloud.blog"
+    headers = {
+        "user-agent": "Mozilla/5.0 (X11; Linux x86_64; rv:139.0) Gecko/20100101 Firefox/139.0",
+        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "origin": base_url,
+        "referer": base_url,
+    }
+
     def __init__(self, embed_url: str) -> None:
         self.embed_url = embed_url
 
@@ -347,18 +345,39 @@ class Extractor:
 
         return array
 
-    def _get(self, values) -> str:
+    def _get(self, values, ctx: str) -> str:
         values = list(filter(None, values))
+
+        def get_flag() -> int:
+            try:
+                flag = _re(Patterns.SET_DEF_FLAG, ctx, l=False).group(1)
+                flag = int(flag[0])
+
+            except ValueError:
+                flag = 0
+
+            return flag
 
         if len(values) == 1 or not values[1].isdigit():
             if len(values) == 2:
-                if any(i in values[1] for i in (">", "<")):
-                    v = values[-1].split()
-                    v[-1] = f"({v[-1]} & 31)"
-                    values[-1] = " ".join(v)
+                expression = values[-1].split()
 
-                e = f"{values[0]}{values[1]}"
-                i = eval(e)
+                operator = expression[0]
+                operand = expression[-1]
+
+                if not operand.isdigit():
+                    bitwise_args = _re(Patterns.VAR.format(name=operand), self.script, l=False).groups()
+                    bitwise_args = bitwise_args[0] or bitwise_args[1]
+                    bitwise_args = map(int, re.findall(r"(\d+)", bitwise_args))
+
+                    flag = get_flag()
+                    operand = str(self.bitwise[flag](*bitwise_args))
+
+                if any(i in operator for i in (">", "<")):
+                    operand = f"({operand} & 31)"
+
+                values[-1] = f"{operator} {operand}"
+                i = eval("".join(values))
 
             else:
                 i = int(values[0])
@@ -368,7 +387,7 @@ class Extractor:
         elif len(values) > 1:
             i1 = int(values[0])
             i2 = int(values[1])
-            flag = int(values[2]) if len(values) == 3 else 0
+            flag = int(values[2]) if len(values) == 3 else get_flag()
 
             i = self.bitwise[flag](i1, i2)
             v = self.string_array[i]
@@ -381,7 +400,6 @@ class Extractor:
     def _get_indexes(self) -> list[int]:
         indexes = []
         array_items = _re(Patterns.INDEX_ARRAY_CONTENT, self.script, l=True)[-1]
-
         for m in _re(Patterns.INDEX_ARRAY_ITEM, array_items, l=True):
             idx = m[0] or m[1] or m[2]
 
@@ -397,10 +415,12 @@ class Extractor:
         keygen_body = keygen_func.group(1)
 
         functions: list[str] = []
+        print(keygen_body)
 
         for i in re.findall(Patterns.GET, keygen_body):
-            functions.append(self._get(i))
+            functions.append(self._get(i[1:], keygen_body))
 
+        print(functions)
         flags = 0
 
         for f in functions:
@@ -419,7 +439,7 @@ class Extractor:
     async def _get_secret_key(self) -> bytes:
         strings = ""
 
-        script_url = f"{base_url}/js/player/a/v2/pro/embed-1.min.js"
+        script_url = f"{self.base_url}/js/player/a/v2/pro/embed-1.min.js"
         script_version = int(time.time())
         self.script = await make_request(script_url, {}, {"v": script_version}, lambda i: i.text())
 
@@ -442,16 +462,10 @@ class Extractor:
         return key
 
     async def extract(self) -> dict:
-        headers = {
-            "User-Agent": user_agent,
-            "Referer": base_url,
-            "Origin": base_url,
-        }
-
         id = _re(Patterns.SOURCE_ID, self.embed_url, l=False).group(1)
-        get_src_url = f"{base_url}/embed-2/v2/e-1/getSources"
+        get_src_url = f"{self.base_url}/embed-2/v2/e-1/getSources"
 
-        resp = await make_request(get_src_url, headers, {"id": id}, lambda i: i.json())
+        resp = await make_request(get_src_url, self.headers, {"id": id}, lambda i: i.json())
 
         if not resp["sources"]:
             raise ValueError("no sources found")
@@ -468,7 +482,7 @@ class Extractor:
 
 
 async def main():
-    url = "https://megacloud.blog/embed-2/v2/e-1/Y3WMUobtMp6T?k=1&autoPlay=1&oa=0&asi=1"
+    url = "https://megacloud.blog/embed-2/v2/e-1/0pGsvDXahWWJ?k=1&autoPlay=1&oa=0&asi=1"
     a = Extractor(url)
     print(json.dumps(await a.extract(), indent=4))
 
