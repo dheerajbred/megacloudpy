@@ -78,14 +78,14 @@ class Patterns(StrEnum):
 
 class Resolvers:
     @staticmethod
-    def _get_key(s: "Extractor") -> str:
+    def _get_key(s: "Megacloud") -> str:
         fcall = _re(Patterns.KEY_VAR, s.script, l=False).group(1)
         args = _re(Patterns.GET, fcall, l=False).groups()
 
         return s._get(args[1:], fcall).replace("-", "")
 
     @staticmethod
-    def _get_keys(s: "Extractor") -> list[str]:
+    def _get_keys(s: "Megacloud") -> list[str]:
         key_array_items = _re(Patterns.KEY_ARRAY_CONTENT, s.script, l=True)[0]
         func_calls = re.split(r"(?<=\)),(?=\w)", key_array_items)
 
@@ -97,7 +97,7 @@ class Resolvers:
         return keys
 
     @classmethod
-    def slice(cls, s: "Extractor") -> tuple[list, list]:
+    def slice(cls, s: "Megacloud") -> tuple[list, list]:
         key = cls._get_key(s)
         if key.endswith("="):
             key = base64.b64decode(key).decode()
@@ -105,7 +105,7 @@ class Resolvers:
         return list(key), list(range(0, len(key)))
 
     @classmethod
-    def abc(cls, s: "Extractor") -> tuple[list, list]:
+    def abc(cls, s: "Megacloud") -> tuple[list, list]:
         values = {}
         c = _re(Patterns.GET_KEY, s.script, l=False).group(1)
 
@@ -137,7 +137,7 @@ class Resolvers:
         return list(key), list(range(0, len(key)))
 
     @classmethod
-    def map(cls, s: "Extractor") -> tuple[list, list]:
+    def map(cls, s: "Megacloud") -> tuple[list, list]:
         try:
             keys = cls._get_keys(s)
         except ValueError as e:
@@ -153,28 +153,21 @@ class Resolvers:
         return keys, indexes
 
     @classmethod
-    def from_charcode(cls, s: "Extractor", keys: list = [], indexes: list = []) -> tuple[list, list]:
+    def from_charcode(cls, s: "Megacloud", keys: list = [], indexes: list = []) -> tuple[list, list]:
         raw_values = []
 
         if indexes:
-            try:
-                map_ = _re(Patterns.MAP, s.script, l=False)
-                map_arg = map_.group(1)
-                map_body = map_.group(2)
+            map_ = _re(Patterns.MAP, s.script, l=False)
+            map_arg = map_.group(1)
+            map_body = map_.group(2)
+            if m := re.search(Patterns.BITWISE2, map_body):
+                flag = _re(Patterns.SET_DEF_FLAG, map_body, l=False).group(1)
+                func = s.bitwise[int(flag)]
 
-            except ValueError:
-                indexes = s._get_indexes()
-                raw_values = [int(i) for i in indexes]
+                var_name = m.group(1) if m.group(1) != map_arg else m.group(2)
+                var_value = _re(Patterns.VAR.format(name=var_name), s.script, l=False).group(1)
 
-            else:
-                if m := re.search(Patterns.BITWISE2, map_body):
-                    flag = _re(Patterns.SET_DEF_FLAG, map_body, l=False).group(1)
-                    func = s.bitwise[int(flag)]
-
-                    var_name = m.group(1) if m.group(1) != map_arg else m.group(2)
-                    var_value = _re(Patterns.VAR.format(name=var_name), s.script, l=False).group(1)
-
-                    raw_values = [func(int(var_value), int(i)) for i in indexes]
+                raw_values = [func(int(var_value), int(i)) for i in indexes]
 
         elif keys:
             map_ = _re(Patterns.MAP, s.script, l=False)
@@ -187,10 +180,14 @@ class Resolvers:
             # elif m := re.search(bitwise3_pattern, map_body):
             #     ...
 
+        else:
+            indexes = s._get_indexes()
+            raw_values = [int(i) for i in indexes]
+
         return [chr(v) for v in raw_values], list(range(0, len(raw_values)))
 
     @classmethod
-    def fallback(cls, s: "Extractor") -> tuple[list, list]:
+    def fallback(cls, s: "Megacloud") -> tuple[list, list]:
         to_try = [cls.slice, cls.map, cls.from_charcode]
 
         for t in to_try:
@@ -203,7 +200,7 @@ class Resolvers:
             raise ValueError("key not found =(")
 
     @classmethod
-    def resolve(cls, flags: int, s: "Extractor") -> bytes:
+    def resolve(cls, flags: int, s: "Megacloud") -> bytes:
         key = ""
         keys = []
         indexes = []
@@ -296,7 +293,7 @@ def generate_sequence(n: int) -> list[int]:
     return res
 
 
-class Extractor:
+class Megacloud:
     base_url = "https://megacloud.blog"
     headers = {
         "user-agent": "Mozilla/5.0 (X11; Linux x86_64; rv:139.0) Gecko/20100101 Firefox/139.0",
