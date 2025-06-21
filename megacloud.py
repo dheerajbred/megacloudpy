@@ -140,14 +140,12 @@ class Resolvers:
     def map(cls, s: "Megacloud") -> tuple[list, list]:
         try:
             keys = cls._get_keys(s)
-            print("----------keys:", keys)
         except ValueError as e:
             print(f"keys not found: {e}")
             keys = []
 
         try:
             indexes = s._get_indexes()
-            print("----------indexes:", indexes)
         except ValueError as e:
             print(f"indexes not found: {e}")
             indexes = []
@@ -464,9 +462,6 @@ class Megacloud:
         get_src_url = f"{self.base_url}/embed-2/v2/e-1/getSources"
 
         resp = await make_request(get_src_url, self.headers, {"id": id}, lambda i: i.json())
-        
-        # Debug: Print the full response to see what we're getting
-        print("API Response:", json.dumps(resp, indent=2))
 
         if not resp["sources"]:
             raise ValueError("no sources found")
@@ -483,8 +478,7 @@ class Megacloud:
 
 
 async def main():
-    # url = "https://megacloud.blog/embed-2/v2/e-1/HakXnbHZZUiV?k=1&autoPlay=1&oa=0&asi=1"
-    url = "https://megacloud.blog/embed-2/v2/e-1/1Iz9gXT6aAOs?z=&autoPlay=0&asi=0"
+    url = "https://megacloud.blog/embed-2/v2/e-1/HakXnbHZZUiV?k=1&autoPlay=1&oa=0&asi=1"
     a = Megacloud(url)
     print(json.dumps(await a.extract(), indent=4))
 

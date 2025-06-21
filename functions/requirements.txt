@@ -1,2 +1,0 @@
-aiohttp==3.12.13
-pycryptodome==3.23.0 

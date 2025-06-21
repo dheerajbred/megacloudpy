@@ -1,4 +1,0 @@
-Flask==2.3.3
-aiohttp==3.12.13
-pycryptodome==3.23.0
-requests==2.31.0 
