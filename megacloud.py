@@ -478,9 +478,10 @@ class Megacloud:
 
 
 async def main():
-    url = "https://megacloud.blog/embed-2/v2/e-1/HakXnbHZZUiV?k=1&autoPlay=1&oa=0&asi=1"
+    url = "https://megacloud.blog/embed-2/v2/e-1/nGvw8vuMWbml?z=1&autoPlay=1&oa=0&asi=1"
     a = Megacloud(url)
-    print(json.dumps(await a.extract(), indent=4))
+    result = json.dumps(await a.extract(), indent=4)
+    print("----result:", result)
 
 
 asyncio.run(main())
